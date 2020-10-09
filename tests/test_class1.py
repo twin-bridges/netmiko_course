@@ -25,11 +25,28 @@ def test_runner_collateral(test_case):
     assert "Traceback" not in std_out
 
 
-# def test_class1_ex1():
-#     base_path = "../class1/exercises/exercise1/"
-#     nornir_inventory = gen_inventory_dict(base_path)
-#     nr = InitNornir(inventory=nornir_inventory, logging=NORNIR_LOGGING)
-#     assert isinstance(nr, nornir.core.Nornir)
-#     assert isinstance(nr.inventory.hosts, nornir.core.inventory.Hosts)
-#     assert isinstance(nr.inventory.hosts["my_host"], nornir.core.inventory.Host)
-#     assert nr.inventory.hosts["my_host"].hostname == "localhost"
+def test_class1_ex1():
+    base_path = "../class1/exercises/"
+    cmd_list = ["python", "exercise1.py"]
+    std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
+    assert return_code == 0
+    assert std_err == ""
+    assert "nxos1#" in std_out
+
+
+def test_class1_ex2():
+    base_path = "../class1/exercises/"
+    cmd_list = ["python", "exercise2.py"]
+    std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
+    assert return_code == 0
+    assert std_err == ""
+    assert "nxos1#" in std_out
+
+
+def test_class1_ex3():
+    base_path = "../class1/exercises/"
+    cmd_list = ["python", "exercise3.py"]
+    std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
+    assert return_code == 0
+    assert std_err == ""
+    assert "nxos1#" in std_out

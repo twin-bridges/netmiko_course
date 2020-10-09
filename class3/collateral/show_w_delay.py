@@ -16,6 +16,7 @@ my_device = {
 with ConnectHandler(**my_device) as net_connect:
 
     # Multiply delay by four for this particular method
-    output = net_connect.send_command("show ip int brief", delay_factor=5, max_loops=1000)
+    output = net_connect.send_command(
+        "show ip int brief", delay_factor=5, max_loops=1000
+    )
     print(output)
-
