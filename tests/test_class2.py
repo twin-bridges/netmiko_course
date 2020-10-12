@@ -34,6 +34,7 @@ def test_class2_ex1():
     assert std_err == ""
     assert std_out.count("10.220.88.1") == 4
 
+
 def test_class2_ex2():
     base_path = "../class2/exercises/"
     cmd_list = ["python", "exercise2.py"]
@@ -42,6 +43,7 @@ def test_class2_ex2():
     assert std_err == ""
     assert "cisco3>" in std_out
     assert "cisco3#" in std_out
+
 
 def test_class2_ex3():
     base_path = "../class2/exercises/"
