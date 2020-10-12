@@ -1,6 +1,3 @@
-# Add logging # for loop and multiple devices
-# four arista switches
-# send show ip arp
 import os
 from getpass import getpass
 from netmiko import ConnectHandler
@@ -20,7 +17,13 @@ cisco3 = {
 with ConnectHandler(**cisco3) as net_connect:
     # Intentionally do something that will break
     start_prompt = net_connect.find_prompt()
+
+    # Will fail
+    # net_connect.send_command("disable")
+
+    # Working with expect_string
     net_connect.send_command("disable", expect_string=r">")
+
     end_prompt = net_connect.find_prompt()
     print(f"\nStarting prompt: {start_prompt}")
     print(f"\nEnding prompt: {end_prompt}")

@@ -1,6 +1,3 @@
-# Add logging # for loop and multiple devices
-# four arista switches
-# send show ip arp
 import os
 from getpass import getpass
 from netmiko import ConnectHandler
