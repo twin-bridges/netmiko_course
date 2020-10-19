@@ -16,15 +16,16 @@ my_device = {
 
 with ConnectHandler(**my_device) as net_connect:
 
-    filename = "cisco3-cfg-May-18-11-15-36.159-115"
+    filename = "cisco3-cfg-May-16-11-15-40.259-113"
     cmd = f"del flash:/{filename}"
-    output = net_connect.send_command(
-        cmd, expect_string=r"Delete filename", strip_prompt=False, strip_command=False
+
+    output = net_connect.send_command_timing(
+        cmd, strip_prompt=False, strip_command=False
     )
-    output += net_connect.send_command(
-        "\n", expect_string=r"confirm", strip_prompt=False, strip_command=False
+    output += net_connect.send_command_timing(
+        "\n", strip_prompt=False, strip_command=False
     )
-    output += net_connect.send_command(
-        "y", expect_string=r"#", strip_prompt=False, strip_command=False
+    output += net_connect.send_command_timing(
+        "y", strip_prompt=False, strip_command=False
     )
     print(output)

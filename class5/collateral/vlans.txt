@@ -1,0 +1,10 @@
+vlan 500
+ name gold500
+vlan 501
+ name gold501
+vlan 502
+ name gold502
+vlan 503
+ name gold503
+vlan 504
+ name gold504
