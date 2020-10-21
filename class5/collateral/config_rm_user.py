@@ -29,9 +29,13 @@ if __name__ == "__main__":
 
         cmd = "no username my_user"
         output = net_connect.config_mode()
-        output += net_connect.send_command_timing(cmd, strip_prompt=False, strip_command=False)
+        output += net_connect.send_command_timing(
+            cmd, strip_prompt=False, strip_command=False
+        )
         if "confirm" in output:
-            output += net_connect.send_command_timing("y", strip_prompt=False, strip_command=False)
+            output += net_connect.send_command_timing(
+                "y", strip_prompt=False, strip_command=False
+            )
         output += net_connect.exit_config_mode()
         output += net_connect.save_config()
         print(output)

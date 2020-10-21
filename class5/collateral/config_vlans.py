@@ -26,10 +26,7 @@ if __name__ == "__main__":
     arista3 = device_dict["arista3"]
     arista4 = device_dict["arista4"]
 
-    cfg_changes = [
-        "vlan 500",
-        "name gold500",
-    ]
+    cfg_changes = ["vlan 500", "name gold500"]
 
     for device in (arista1, arista2, arista3, arista4):
         device["password"] = password
