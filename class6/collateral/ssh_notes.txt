@@ -1,0 +1,16 @@
+# Encrypt an existing SSH key
+ssh-keygen -o -p -f ./test_rsa
+
+# Run SSH Agent
+ssh-agent 
+
+# Obviously, with the right values 
+SSH_AUTH_SOCK=/tmp/ssh-7PGNJNwQ9OgN/agent.30115; export SSH_AUTH_SOCK;
+SSH_AGENT_PID=30116; export SSH_AGENT_PID;
+
+# Add keys to SSH Agent
+ssh-add ~/.ssh/test_rsa
+ssh-add -l
+
+# Paramiko will automatically look for:
+# Any “id_rsa”, “id_dsa” or “id_ecdsa” key discoverable in ~/.ssh/
