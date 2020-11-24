@@ -1,0 +1,5 @@
+no logging console
+logging buffered 50000
+
+
+

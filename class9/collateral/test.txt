@@ -1,0 +1,3173 @@
+# Script to detect memory leaks. It runs on the Polaris switch.
+# $Id: memleak.tcl,v 1.63 2018/02/07 01:41:41 vpendyal Exp $
+# Copyright (c) 2015-2019 by Cisco Systems, Inc.
+# Author: Veeru Pendyala
+#         2 Sep 2015
+# Usage: 
+#  Copy the tcl script to flash on switch
+#  Execute 'tclsh' from IOS prompt
+#  Prepare testbed for test (i.e. bringup your sessions etc.)
+#  Execute 'memleak_baseline' to get a baseline of memory snapshot
+#  Perform the tests like session leave/rejoin, roam etc.
+#  Execute 'memleak_detect' to get summary of leak report
+# Things to control:
+#  What leak types to detect, by default all types enabled except ios_gd_leaks
+#  and ios_gdchunk_leaks
+#  Modify proc_list variables to add/remove processes from monitoring list
+#  Change leak_threshold to whatever you need
+#  Control standby flag whether need to monitor stdby procs or not
+
+##########Global variables##########
+#Base process list common to all platforms in polaris
+set proc_list "ios fman_rp fman_fp repm dbm cli_agent smand plogd hman lman \
+               nginx psd btman"
+set leak_types "rss_leaks ios_gd_leaks ios_gdchunk_leaks ios_procmem_leaks \
+                ios_allocpc_leaks ios_chunk_leaks ios_buffer_leaks bmalloc_leaks \
+                bmchunk_leaks tdlmsg_leaks tdldb_leaks mmalloc_leaks smaps_leaks \
+                qfp_leaks"
+set leak_threshold 0.5
+set standby 1
+set top_leaks 5
+set backtrace_depth 0
+set script_version 1.68
+set platform ""
+set sw_str ""
+set rp_str ""
+set fp_str ""
+set fed_str ""
+set qfp_str ""
+set sv_enabled 0
+set image_version ""
+array set mem_base {}
+array set mem_latest {}
+array set mem {}
+set tcl_ios_cmd_max_len 253
+
+##########Procedures##########
+proc incr {varName {amount 1}} {
+   upvar 1 $varName var
+   set var [expr {$var+$amount}]
+}
+
+proc union {list1 list2} {
+   foreach elem $list1 {
+      set cache($elem) 1
+   }
+   foreach elem $list2 {
+      if {![info exists cache($elem)]} {
+         lappend list1 $elem
+      }
+   }
+   return $list1
+}
+
+proc exec_potential_long_cmd {cmd} {
+global tcl_ios_cmd_max_len debug
+   if {[string length $cmd] > $tcl_ios_cmd_max_len} {
+       set out [get_long_cmd_output $cmd $tcl_ios_cmd_max_len]
+   } else {
+       if {$debug} {puts "Executing $cmd"}
+       set out [exec $cmd]
+   }
+   return $out
+}
+
+proc callsite_action {role action} {
+   global proc_list sw_str rp_str fp_str fed_str qfp_str debug
+   build_strings $role
+   foreach proc $proc_list {
+      switch $proc {
+         fman_rp {set cmd "deb plat soft mem forwar $sw_str $rp_str alloc call $action"}
+         fman_fp {set cmd "deb plat soft mem forwar $sw_str $fp_str alloc call $action"}
+         repm {set cmd "deb plat soft mem repl $sw_str $rp_str alloc call $action"}
+         cli_agent {set cmd "deb plat soft mem cli-agent $sw_str $rp_str alloc call $action"}
+         smand {set cmd "deb plat soft mem shell $sw_str $rp_str alloc call $action"}
+         plogd {set cmd "deb plat soft mem logger $sw_str $rp_str alloc call $action"}
+         hman {set cmd "deb plat soft mem host-manager $sw_str $rp_str alloc call $action"}
+         lman {set cmd "deb plat soft mem license-manager $sw_str $rp_str alloc call $action"}
+         bt_logger {set cmd "deb plat soft mem bt-logger $sw_str $rp_str alloc call $action"}
+         keyman {continue}
+         psd {set cmd "deb plat soft mem pluggable $sw_str $rp_str alloc call $action"}
+         tms {set cmd "deb plat soft mem table-manager $sw_str $rp_str alloc call $action"}
+         fed {set cmd "deb plat soft mem fed $sw_str $fed_str alloc call $action"}
+         platform {set cmd "deb plat soft mem platform $sw_str $rp_str alloc call $action"}
+         sif_mgr {set cmd "deb plat soft mem sif $sw_str $rp_str alloc call $action"}
+         stack_mgr {set cmd "deb plat soft mem stack $sw_str $rp_str alloc call $action"}
+         sessmgrd {set cmd "deb plat soft mem smd $sw_str $rp_str alloc call $action"}
+         wncmgrd {set cmd "deb plat soft mem wireless $sw_str $rp_str alloc call $action"}
+         odm_proxy {set cmd "deb plat soft mem odm-proxy $sw_str $rp_str alloc call $action"}
+         btman {set cmd "deb plat soft mem btrace-m $sw_str $rp_str alloc call $action"}
+         pubd {set cmd "deb plat soft mem mdt-pubd $sw_str $rp_str alloc call $action"}
+         ndbmand {set cmd "deb plat soft mem ndbman $sw_str $rp_str alloc call $action"}
+         pttcd {continue}
+         ncsshd {continue}
+         confd {continue}
+         cmand {set cmd "deb plat soft mem chassis-manager $sw_str $rp_str alloc call $action"}
+         cman_fp {set cmd "deb plat soft mem chassis-manager $sw_str $fp_str alloc call $action"}
+         cmcc {continue}
+         iomd {continue}
+         vman {set cmd "deb plat soft mem virt-manager $sw_str $rp_str alloc call $action"}
+         rif_mgr {continue}
+         cpp_cp_svr {set cmd "deb plat soft mem qfp-control $sw_str $qfp_str alloc callsite $action"}
+         cpp_driver {set cmd "deb plat soft mem qfp-driver $sw_str $qfp_str alloc callsite $action"}
+         cpp_ha {set cmd "deb plat soft mem qfp-ha $sw_str $qfp_str alloc callsite $action"}
+         cpp_sp_svr {set cmd "deb plat soft mem qfp-service $sw_str $qfp_str alloc callsite $action"}
+         default {set cmd "deb plat soft mem $proc $sw_str $rp_str alloc call $action"}
+      }
+      if {[regexp {(.*)_(\d+)$} $proc match myproc instance]} {
+          switch $myproc {
+              wncd {set cmd "deb plat soft mem wncd $instance $sw_str $rp_str alloc call $action"}
+              hman {set cmd "deb plat soft mem host $sw_str $instance alloc call $action"}
+              cmcc {set cmd "deb plat soft mem chassis $sw_str $instance alloc call $action"}
+              iomd {set cmd "deb plat soft mem iomd $sw_str $instance/0 alloc call $action"}
+          }
+      }
+      if {$debug} {puts "Executing $cmd"}
+      set out [exec $cmd]
+   }
+}
+
+proc callsite_backtrace_action {role proc action callsite_list} {
+   global sw_str rp_str fp_str fed_str qfp_str backtrace_depth debug 
+   build_strings $role
+   switch $proc {
+      fman_rp {set cmd "deb plat soft mem forwar $sw_str $rp_str alloc back $action"}
+      fman_fp {set cmd "deb plat soft mem forwar $sw_str $fp_str alloc back $action"}
+      repm {set cmd "deb plat soft mem repl $sw_str $rp_str alloc back $action"}
+      cli_agent {set cmd "deb plat soft mem cli-agent $sw_str $rp_str alloc back $action"}
+      smand {set cmd "deb plat soft mem shell $sw_str $rp_str alloc back $action"}
+      plogd {set cmd "deb plat soft mem logger $sw_str $rp_str alloc back $action"}
+      hman {set cmd "deb plat soft mem host-manager $sw_str $rp_str alloc back $action"}
+      lman {set cmd "deb plat soft mem license-manager $sw_str $rp_str alloc back $action"}
+      bt_logger {set cmd "deb plat soft mem bt-logger $sw_str $rp_str alloc back $action"}
+      psd {set cmd "deb plat soft mem pluggable $sw_str $rp_str alloc back $action"}
+      tms {set cmd "deb plat soft mem table-manager $sw_str $rp_str alloc back $action"}
+      fed {set cmd "deb plat soft mem fed $sw_str $fed_str alloc back $action"}
+      platform {set cmd "deb plat soft mem platform $sw_str $rp_str alloc back $action"}
+      sif_mgr {set cmd "deb plat soft mem sif $sw_str $rp_str alloc back $action"}
+      stack_mgr {set cmd "deb plat soft mem stack $sw_str $rp_str alloc back $action"}
+      sessmgrd {set cmd "deb plat soft mem smd $sw_str $rp_str alloc back $action"}
+      wncmgrd {set cmd "deb plat soft mem wireless $sw_str $rp_str alloc back $action"}
+      odm_proxy {set cmd "deb plat soft mem odm-proxy $sw_str $rp_str alloc back $action"}
+      btman {set cmd "deb plat soft mem btrace-m $sw_str $rp_str alloc back $action"}
+      pubd {set cmd "deb plat soft mem mdt-pubd $sw_str $rp_str alloc back $action"}
+      ndbmand {set cmd "deb plat soft mem ndbman $sw_str $rp_str alloc back $action"}
+      pttcd {return}
+      ncsshd {return}
+      confd {return}
+      cmand {set cmd "deb plat soft mem chassis-manager $sw_str $rp_str alloc back $action"}
+      cman_fp {set cmd "deb plat soft mem chassis-manager $sw_str $fp_str alloc back $action"}
+      vman {set cmd "deb plat soft mem virt-manager $sw_str $rp_str alloc back $action"}
+      cpp_cp_svr {set cmd "deb plat soft mem qfp-control $sw_str $qfp_str alloc back $action"}
+      cpp_driver {set cmd "deb plat soft mem qfp-driver $sw_str $qfp_str alloc back $action"}
+      cpp_ha {set cmd "deb plat soft mem qfp-ha $sw_str $qfp_str alloc back $action"}
+      cpp_sp_svr {set cmd "deb plat soft mem qfp-service $sw_str $qfp_str alloc back $action"}
+      rif_mgr {return}
+      keyman {return}
+      cmcc {return}
+      iomd {return}
+      default {set cmd "deb plat soft mem $proc $sw_str $rp_str alloc back $action"}
+   }
+   if {[regexp {(.*)_(\d+)$} $proc match myproc instance]} {
+       switch $myproc {
+          wncd {set cmd "deb plat soft mem wncd $instance $sw_str $rp_str alloc back $action"}
+          hman {set cmd "deb plat soft mem host $sw_str $instance alloc back $action"}
+          cmcc {set cmd "deb plat soft mem chassis $sw_str $instance alloc back $action"}
+          iomd {set cmd "deb plat soft mem iomd $sw_str $instance/0 alloc back $action"}
+       }
+   }
+   if {$action == "start"} {
+      foreach callsite $callsite_list {
+         set full_cmd "$cmd $callsite depth $backtrace_depth"
+         if {$debug} {puts "Executing $full_cmd"}
+         set out [exec $full_cmd]
+      }
+   } else {
+      if {$debug} {puts "Executing $cmd"}
+      set out [exec $cmd]
+   }
+}
+
+proc stop_callsite_backtrace {role} {
+   global proc_list
+   foreach proc $proc_list {
+      callsite_backtrace_action $role $proc "stop" ""
+   }
+}
+
+proc clear_callsite_backtrace {role} {
+   global proc_list
+   foreach proc $proc_list {
+      callsite_backtrace_action $role $proc "clear" ""
+   }
+}
+
+proc show_callsite_backtrace {role proc} {
+   global sw_str rp_str fp_str fed_str qfp_str debug
+   build_strings $role
+   switch $proc {
+      fman_rp {set cmd "sh plat soft mem forwar $sw_str $rp_str alloc back"}
+      fman_fp {set cmd "sh plat soft mem forwar $sw_str $fp_str alloc back"}
+      repm {set cmd "sh plat soft mem repl $sw_str $rp_str alloc back"}
+      cli_agent {set cmd "sh plat soft mem cli-agent $sw_str $rp_str alloc back"}
+      smand {set cmd "sh plat soft mem shell $sw_str $rp_str alloc back"}
+      plogd {set cmd "sh plat soft mem logger $sw_str $rp_str alloc back"}
+      hman {set cmd "sh plat soft mem host-manager $sw_str $rp_str alloc back"}
+      lman {set cmd "sh plat soft mem license-manager $sw_str $rp_str alloc back"}
+      bt_logger {set cmd "sh plat soft mem bt-logger $sw_str $rp_str alloc back"}
+      psd {set cmd "sh plat soft mem pluggable $sw_str $rp_str alloc back"}
+      tms {set cmd "sh plat soft mem table-manager $sw_str $rp_str alloc back"}
+      fed {set cmd "sh plat soft mem fed $sw_str $fed_str alloc back"}
+      platform {set cmd "sh plat soft mem platform $sw_str $rp_str alloc back"}
+      sif_mgr {set cmd "sh plat soft mem sif $sw_str $rp_str alloc back"}
+      stack_mgr {set cmd "sh plat soft mem stack $sw_str $rp_str alloc back"}
+      sessmgrd {set cmd "sh plat soft mem smd $sw_str $rp_str alloc back"}
+      wncmgrd {set cmd "sh plat soft mem wireless $sw_str $rp_str alloc back"}
+      odm_proxy {set cmd "sh plat soft mem odm-proxy $sw_str $rp_str alloc back"}
+      btman {set cmd "sh plat soft mem btrace-m $sw_str $rp_str alloc back"}
+      pubd {set cmd "sh plat soft mem mdt-pubd $sw_str $rp_str alloc back"}
+      ndbmand {set cmd "sh plat soft mem ndbman $sw_str $rp_str alloc back"}
+      pttcd {return}
+      ncsshd {return}
+      confd {return}
+      cmand {set cmd "sh plat soft mem chassis-manager $sw_str $rp_str alloc back"}
+      cman_fp {set cmd "sh plat soft mem chassis-manager $sw_str $fp_str alloc back"}
+      vman {set cmd "sh plat soft mem virt-manager $sw_str $rp_str alloc back"}
+      cpp_cp_svr {set cmd "sh plat soft mem qfp-control $sw_str $qfp_str alloc back"}
+      cpp_driver {set cmd "sh plat soft mem qfp-driver $sw_str $qfp_str alloc back"}
+      cpp_ha {set cmd "sh plat soft mem qfp-ha $sw_str $qfp_str alloc back"}
+      cpp_sp_svr {set cmd "sh plat soft mem qfp-service $sw_str $qfp_str alloc back"}
+      rif_mgr {return}
+      keyman {return}
+      cmcc {return}
+      iomd {return}
+      default {set cmd "sh plat soft mem $proc $sw_str $rp_str alloc back"}
+   }
+   if {[regexp {(.*)_(\d+)$} $proc match myproc instance]} {
+       switch $myproc {
+          wncd {set cmd "sh plat soft mem wncd $instance $sw_str $rp_str alloc back"}
+          hman {set cmd "sh plat soft mem host $sw_str $instance alloc back"}
+          cmcc {set cmd "sh plat soft mem chassis $sw_str $instance alloc back"}
+          iomd {set cmd "sh plat soft mem iomd $sw_str $instance/0 alloc back"}
+       }
+   }
+   if {$debug} {puts "Executing $cmd"}
+   puts [exec $cmd]
+}
+
+proc enable_all_leaks {} {
+   global leak_types standby
+   foreach leak_type $leak_types {
+      global $leak_type
+      #to satisfy code review tool
+      set str "set $leak_type 1"
+      eval $str
+   }
+   # we need to enable malloc accounting for maroon malloc
+   callsite_action a start
+   if {$standby} {
+      callsite_action s start
+   }
+}
+
+proc disable_all_leaks {} {
+   global leak_types standby
+   foreach leak_type $leak_types {
+      global $leak_type
+      #to satisfy code review tool
+      set str "set $leak_type 0"
+      eval $str
+   }
+   # we need to disable malloc accounting for maroon malloc
+   callsite_action a stop
+   if {$standby} {
+      callsite_action s stop
+   }
+}
+
+proc get_switch_str {role} {
+   global platform
+   if {$platform == "cat9800"} {
+       set device "chassis"
+   } else {
+       set device "switch"
+   }
+   switch $role {
+      a {set role_str "$device a i.e., active"}
+      s {set role_str "$device s i.e., standby"}
+      default {set role_str "unknown switch"}
+   }
+   return $role_str
+}
+
+proc build_strings {role} {
+   global platform sw_str rp_str fp_str fed_str qfp_str sv_enabled
+   if {$platform == "asr1k" || $platform == "isr4k" || \
+       $platform == "isr1k" || $platform == "csr1k"} {
+      set sw_str ""
+      set rp_str "rp $role"
+      set fp_str "fp $role"
+      set fed_str ""
+      set qfp_str "qfp $role"
+   } elseif {$platform == "cat9800" || $platform == "cat9100"} {
+      set sw_str "chass $role"
+      set rp_str "R0"
+      set fp_str "F0"
+      set fed_str ""
+      set qfp_str "qfp"
+   } elseif {(($platform == "cat9400" || $platform == "cat9500h" || \
+             $platform == "cat9600") && $sv_enabled)} {
+      set sw_str "sw $role"
+      set rp_str "rp active"
+      set fp_str "F0"
+      set fed_str ""
+      set qfp_str ""
+   } elseif {$platform == "cat9400" || $platform == "cat9500h" || \
+             $platform == "cat9600"} {
+      set sw_str ""
+      set rp_str "rp $role"
+      set fp_str "fp $role"
+      set fed_str "$role"
+      set qfp_str ""
+   } else {
+      set sw_str "sw $role"
+      set rp_str "R0"
+      set fp_str "F0"
+      set fed_str ""
+      set qfp_str ""
+   }
+}
+
+proc print_border {char} {
+   set hdr ""
+   for {set i 0} {$i<80} {incr i} {append hdr $char}
+   puts $hdr
+}
+
+proc init_proc_info {role} {
+   global mem proc_list
+   #initialize summary info
+   foreach proc $proc_list {
+      foreach cpu "5sec 1min 5min" {
+         set mem($role,$proc,cpu,$cpu) 0
+      }
+      if {[regexp {ios} $proc_list]} {
+         set mem($role,$proc,procmem,all) 0
+         set mem($role,$proc,allocpc,all) 0
+         set mem($role,$proc,gd,all) 0
+         set mem($role,$proc,gdchunk,all) 0
+         set mem($role,$proc,buffer,all) 0
+      }
+      set mem($role,$proc,cpu) 0
+      set mem($role,$proc,rss) 0
+      set mem($role,$proc,virt) 0
+      set mem($role,$proc,bmalloc,Summary,allocs_frees) 0
+      set mem($role,$proc,bmchunk,all,allocs_frees) 0
+      set mem($role,$proc,tdlmsg,all) 0
+      set mem($role,$proc,tdldb,all) 0
+      set mem($role,$proc,alloc_comp,Summary,allocs_frees) 0
+      set mem($role,$proc,alloc_data,Summary,allocs_frees) 0
+      set mem($role,$proc,mmalloc,all) 0
+      set mem($role,$proc,smaps,all,rss) 0
+   }
+}
+
+proc get_image_info {} {
+   global platform image_version standby debug
+   set cmd "show version | in cisco.*processor"
+   if {$debug} {puts "Executing $cmd"}
+   set out [exec "$cmd"]
+   switch -regexp $out {
+      CE8500 {
+	 set platform "asr1k"
+      }
+      C8500 {
+	 set platform "asr1k"
+      }
+      vEWLC {
+         set platform "cat9800"
+      }
+      C9800-CL {
+         set platform "cat9800"
+      }
+      CT5540 {
+         set platform "cat9800"
+      }
+      CT9540 {
+         set platform "cat9800"
+      }
+      C9800-40 {
+         set platform "cat9800"
+      }
+      CT98CM {
+         set platform "cat9800"
+      }
+      C9800-80 {
+         set platform "cat9800"
+      }
+      CT9580 {
+         set platform "cat9800"
+      }
+      C9800-L- {
+         set platform "cat9800"
+      }
+      C9115 {
+         set platform "cat9100"
+      }
+      C9117 {
+         set platform "cat9100"
+      }
+      C9120 {
+         set platform "cat9100"
+      }
+      NG6K {
+         set platform "cat9500h"
+      }
+      C9500-32C {
+         set platform "cat9500h"
+      }
+      C9500-32QC {
+         set platform "cat9500h"
+      }   
+      C9500-24Y4C {
+         set platform "cat9500h"
+      }   
+      C9500-48Y4C {
+         set platform "cat9500h"
+      }   
+      WS-XC {
+         set platform "cat9400"
+      }
+      C9606R {
+         set platform "cat9600"
+      }
+      C9500-16X {
+         set platform "cat9500"
+      }
+      C9500-24Q {
+         set platform "cat9500"
+      }
+      C9500-12Q {
+         set platform "cat9500"
+      }  
+      C9500-40X {
+         set platform "cat9500"
+      }  
+      C94 {
+         set platform "cat9400"
+      }
+      WS-C3850X {
+         set platform "cat9300"
+      }
+      C9300 {
+         set platform "cat9300"
+      }
+      C9200 {
+         set platform "cat9200"
+      }
+      WS-C3850- {
+         set platform "cat3850"
+      }
+      WS-C3650- {
+         set platform "cat3650"
+      }
+      ASR1[0-9][0-9][0-9] {
+         set platform "asr1k"
+      }
+      ISR4[0-9][0-9][0-9] {
+         set platform "isr4k"
+      }
+      C11[0-9][0-9] {
+        set platform "isr1k"
+      }
+      CSR1000V {
+        set platform "csr1k"
+      }
+      MS390 {
+         set platform "cat9300"
+      }
+      default {
+         puts "----------------------------------"
+         puts "ERROR: unknown platform!!!\n[string trim $out]"
+         puts "----------------------------------"
+      }
+   }
+   #Grab the image version
+   #set cmd "show version | in Cisco IOS Software|cisco.*processor"
+   #if {$debug} {puts "Executing $cmd"}
+   #set out [exec "$cmd"]
+   #if {![regexp {, (.*) Software.*BLD-BLD_(\w*)} $out match version]} {
+   #   regexp {Software.*Version (\S*)} $out - version
+   #}
+   #show version on stack from tclsh is hanging, use sh redundan instead
+   set cmd "show redundancy | in Image Version"
+   if {$debug} {puts "Executing $cmd"}
+   set out [exec "$cmd"]
+   set out [split $out \n]
+   foreach line $out {
+      if {[regexp {, (.*) Software.*BLD-BLD_(\w*)} $line match hw_type version]} {
+         append image_version "$version "
+         #set platform "$hw_type"
+      } elseif {[regexp {, (.*) Software.*Version (\S*)} $line match hw_type version]} {
+         append image_version "$version "
+         #set platform "$hw_type"
+      }
+   }
+   #disable standby if standby is not seen
+   if {[llength $out] < 3} {set standby 0}
+}
+
+# 
+# proc get_license_level
+# checks the license level on the system
+# returns network-advantage for network-advantage
+# returns network-essentials for network-essentials
+#
+# returns network-licenselevel-error if the license
+# level is neither network-advantage or network-essentials.
+#
+proc get_license_level {} {
+    global debug
+
+    set cmd "show version | in network-"
+    if {$debug} {puts "Executing $cmd"}
+    set out [exec "$cmd"]
+    set out [split $out \n]
+    foreach line $out {
+        if {$debug} {puts $line}
+        if {[regexp {^((\w+)-(\w+))} $line match licenselevel]} {
+            if {$debug} {puts "proc License level $licenselevel"}
+                return $licenselevel
+            }
+     }
+
+     return network-licenselevel-error
+}
+
+proc set_proc_list {} {
+   global proc_list platform debug sv_enabled lic_level
+
+   if {$platform == "cat9400" || $platform == "cat9500h" || \
+       $platform == "cat9600"} {
+       set lic_level [get_license_level] 
+       if {$lic_level == "network-advantage"} {
+           set cmd "show stackwise-virtual | in Stackwise Virtual"
+           if {$debug} {puts "Executing $cmd"}
+           set out [exec "$cmd"]
+           switch -regexp $out {
+               Enabled { set sv_enabled 1 }
+           }
+       }
+   }
+
+   #check if netconf is running
+   set cmd "show running | in netconf-yang"
+   if {$debug} {puts "Executing $cmd"}
+   set out [exec "$cmd"]
+   if {[regexp {^netconf-yang} $out]} {
+      append proc_list " nesd syncfd dmiauthd ndbmand pubd pttcd ncsshd confd"
+   }
+
+   if {$platform == "cat9800"} {
+      #Add processes that run on ewlc platform to monitoring list
+      append proc_list " cmand cman_fp vman rif_mgr stack_mgr emd cpp_driver \
+                        cpp_cp_svr cpp_ha cpp_sp_svr wncmgrd rrm rogued odm \
+                        odm_proxy mobilityd nmspd wstatsd sessmgrd"
+      set cmd "sh plat soft proc slot ch a R0 monitor | i wncd_"
+      if {$debug} {puts "Executing $cmd"}
+      set out [exec "$cmd"]
+      set out [split $out \n]
+      set wncd_list ""
+      foreach line $out {
+         if {[regexp {\d+ (wncd_\d+)} $line match instance]} {
+            append wncd_list " $instance"
+         }
+      }
+      append proc_list " [lsort $wncd_list]"
+   } elseif {$platform == "cat9400"} {
+      append proc_list " smd cmand cman_fp fed cmcc iomd nif_mgr"
+      #Add hman and cmcc processes that are spawned for all slots
+      set cmd "sh platform | in Chassis type:"
+      if {$debug} {puts "Executing $cmd"}
+      set out [exec "$cmd"]
+      if {![regexp {Chassis type: +C94(\d+)} $out match num_slots]} {
+         regexp {Chassis type: +WS-XC(\d+)} $out match num_slots
+      }
+      for {set slot 1} {$slot <= $num_slots} {incr slot} {
+         if {$num_slots == "7"} {
+             if {$slot == "3" || $slot == "4"} {
+                 continue
+             } else {
+                 append proc_list " hman_$slot cmcc_$slot"
+             }
+         } elseif {$num_slots == "10"} {
+            if {$slot == "5" || $slot == "6"} {
+                continue
+            } else {
+                append proc_list " hman_$slot cmcc_$slot"
+            }
+         } else {
+            if {$slot == "2" || $slot == "3"} {
+                continue
+            } else {
+                append proc_list " hman_$slot cmcc_$slot"
+            }
+         }
+      }
+      #Add iomd for the slots where card is present
+      #do not use "" since [] are used in the regex pattern
+      set cmd {sh platform | in ^[0-9]+ .*WS-XL|^[0-9]+ .*C9400-LC}
+      if {$debug} {puts "Executing $cmd"}
+      set out [exec "$cmd"]
+      set out [split $out \n]
+      foreach line $out {
+         if {[regexp {^(\d+) } $line match slot]} {
+            append proc_list " iomd_$slot"
+         }
+      }
+      #if wireless is configured, add ewlc wireless processes to monitoring list
+      set cmd "show running | in wireless-controller"
+      if {$debug} {puts "Executing $cmd"}
+      set out [exec "$cmd"]
+      if {[regexp {wireless-controller} $out]} {
+         append proc_list " wncd wncmgrd rrm rogued odm odm_proxy mobilityd nmspd wstatsd"
+      }
+   } elseif {$platform == "cat9500h"} {
+      append proc_list " smd cmand cman_fp fed cmcc iomd nif_mgr"
+      #if wireless is configured, add ewlc wireless processes to monitoring list
+      set cmd "show running | in wireless-controller"
+      if {$debug} {puts "Executing $cmd"}
+      set out [exec "$cmd"]
+      if {[regexp {wireless-controller} $out]} {
+         append proc_list " wncd wncmgrd rrm rogued odm odm_proxy mobilityd nmspd wstatsd"
+      }
+   } elseif {$platform == "cat9600"} {
+      append proc_list " smd cmand cman_fp fed cmcc iomd"
+      #Add hman and cmcc processes that are spawned for all slots
+      set cmd "sh platform | in Chassis type:"
+      if {$debug} {puts "Executing $cmd"}
+      set out [exec "$cmd"]
+      regexp {Chassis type: +C96(\d+)} $out match num_slots
+      for {set slot 1} {$slot <= $num_slots} {incr slot} {
+         if {$num_slots == "6"} {
+             if {$slot == "3" || $slot == "4"} {
+                 continue
+             } else {
+                 append proc_list " hman_$slot cmcc_$slot"
+             }
+         }
+      }
+      #Add iomd for the slots where card is present
+      #do not use "" since [] are used in the regex pattern
+      set cmd {sh platform | in ^[0-9]+ .*C9600-LC}
+      if {$debug} {puts "Executing $cmd"}
+      set out [exec "$cmd"]
+      set out [split $out \n]
+      foreach line $out {
+         if {[regexp {^(\d+) } $line match slot]} {
+            append proc_list " iomd_$slot"
+         }
+      }
+      #if wireless is configured, add ewlc wireless processes to monitoring list
+      set cmd "show running | in wireless-controller"
+      if {$debug} {puts "Executing $cmd"}
+      set out [exec "$cmd"]
+      if {[regexp {wireless-controller} $out]} {
+         append proc_list " wncd wncmgrd rrm rogued odm odm_proxy mobilityd nmspd wstatsd"
+      }
+   } elseif {$platform == "asr1k" || $platform == "isr4k" || $platform == "isr1k" || $platform == "csr1k"} {
+         append proc_list " cmand emd iomd cpp_driver cpp_ha cpp_cp_svr cpp_sp_svr sessmgrd vman"
+   } elseif {$platform == "cat9200"} {
+      #No wireless controller in Quake. Skipping ewlc modules
+      append proc_list " cmm bt_logger keyman tms fed sif_mgr stack_mgr nif_mgr sessmgrd cmand iomd"
+   } elseif {$platform == "cat9100"} {
+      #Since resources are low, reset proc_list only to wncd
+      set proc_list "wncd"
+   } else {
+      #cat9300, cat3850 and cat3650
+      #Add base processes specific to switches to monitoring list
+      append proc_list " cmm bt_logger keyman tms fed platform sif_mgr stack_mgr nif_mgr sessmgrd"
+      #if wireless is configured, add ewlc wireless processes to monitoring list
+      set cmd "show running | in wireless-controller"
+      if {$debug} {puts "Executing $cmd"}
+      set out [exec "$cmd"]
+      if {[regexp {wireless-controller} $out]} {
+         append proc_list " wncd wncmgrd rrm rogued odm odm_proxy mobilityd nmspd wstatsd"
+      }
+   }
+}
+
+proc get_clock_info {} {
+   global debug
+   set clock ""
+   set cmd "show clock"
+   if {$debug} {puts "Executing $cmd"}
+   set out [exec "$cmd"]
+   set out [split $out \n]
+   foreach line $out {
+      if {[regexp {(\d+:\d+:\d+.*)} $line match clock]} {
+         set clock [string trim $clock]
+      }
+   }
+   return $clock
+}
+
+proc get_switch_num {role} {
+   global platform debug sv_enabled
+   set sw_num ""
+   if {(($platform == "cat9400" || $platform == "cat9500h" || \
+         $platform == "cat9600") && !$sv_enabled) || \
+       $platform == "cat9600" || \
+       $platform == "asr1k" || $platform == "isr4k" || \
+       $platform == "isr1k" || $platform == "csr1k"} {
+      set cmd "sh platform | in ok, $role"
+      if {$debug} {puts "Executing $cmd"}
+      set out [exec "$cmd"]
+      regexp {^R(\d) } $out match sw_num
+      return $sw_num
+   }
+   if {$role == "a"} {
+      set role "Active"
+   } elseif {$role == "s"} {
+      set role "Standby"
+   }
+   set cmd "show switch | in $role"
+   if {$debug} {puts "Executing $cmd"}
+   set out [exec "$cmd"]
+   regexp "(\\d+) +$role" $out match sw_num
+   return $sw_num
+}
+
+proc adjust_proc_name {proc} {
+   global platform
+   if {[regexp {linux_io} $proc]} {
+      return "ios"
+   } elseif {[regexp {fman_fp_} $proc]} {
+      return "fman_fp"
+   } elseif {[regexp {platform} $proc]} {
+      return "platform"
+   } elseif {[regexp {cpp_ha_top} $proc]} {
+      return "cpp_ha"
+   } elseif {[regexp {cat} $platform] && [regexp {wncd_0} $proc]} {
+      return "wncd"
+   } else {
+      return $proc
+   }
+}
+
+proc get_long_cmd_output {cmd split_size} {
+   global debug
+   #Extract only the IOS command part
+   regexp {([^|]*)} $cmd match cmd_only
+   set parts [regexp -all -inline -- .{1,$split_size} $cmd]
+   #Extract out the partial match string in the first part
+   regexp {(.*)\|(.*)} [lindex $parts 0] match cmd0 str
+   #Execute the first part of the command
+   if {$debug} {puts "Executing $cmd0"}
+   set out [exec $cmd0]
+   #Prepare the second command with remaining match strings
+   set cmd1 "$cmd_only | in "
+   append cmd1 "$str" [lindex $parts 1]
+   if {$debug} {puts "Executing $cmd1"}
+   append out [exec $cmd1]
+   return $out
+}
+
+#Collect key system load informaton for the snapshot
+proc get_sl_info {role} {
+   global proc_list mem debug sw_str rp_str
+   build_strings $role
+   #if wireless is enabled collect ap and client count as key system load info
+   if {[regexp {wncd} $proc_list]} {
+      #Picking commands that do not require walking the tree or counting nodes
+      set cmd "sh ap image summary $sw_str $rp_str | in Total number of APs"
+      if {$debug} {puts "Executing $cmd"}
+      set out [exec $cmd]
+      if {[regexp {Total number of APs +: +(\d+)} $out match num_aps]} {
+         set mem($role,sl,num_aps) $num_aps
+      } else {
+         set mem($role,sl,num_aps) 0e0
+      }
+      set cmd "sh wireless stats client detail $sw_str $rp_str | in Total Number of Clients"
+      if {$debug} {puts "Executing $cmd"}
+      set out [exec $cmd]
+      if {[regexp {Total Number of Clients +: +(\d+)} $out match num_clients]} {
+         set mem($role,sl,num_clients) $num_clients
+      } else {
+         set mem($role,sl,num_clients) 0e0
+      }
+   }
+}
+
+proc get_rss_info {role} {
+   global proc_list mem debug platform sw_str rp_str fp_str sv_enabled
+   build_strings $role
+   set proc_str "Cpu|Mem :|Swap:"
+   foreach proc $proc_list {
+      switch $proc {
+        ios {append proc_str "|linux_io"}
+        default {append proc_str "|$proc"}
+      }
+   }
+   set cmd "show plat soft proc slot $sw_str $rp_str monitor | in $proc_str"
+   #IOS Tcl has limit on max command length and this cmd can run long
+   set out [exec_potential_long_cmd $cmd]
+   set out [split $out \n]
+   set cpu_pattern {%Cpu\(s\): +([\d.]+) us, +([\d.]+) sy, +([\d.]+) ni, +([\d.]+) id, +([\d.]+) wa, +([\d.]+) hi, +([\d.]+) si, +([\d.]+) st}
+   set mem_pattern {KiB Mem : +(\d+) total, +(\d+) free, +(\d+) used, +(\d+) buff\/cache}
+   set swap_pattern {KiB Swap: +(\d+) total, +(\d+) free, +(\d+) used\. +(\d+) avail Mem}
+   foreach line $out {
+      if {[regexp $cpu_pattern $line match us sy ni id wa hi si st]} {
+         set mem($role,cpu,us) $us
+         set mem($role,cpu,sy) $sy
+         set mem($role,cpu,ni) $ni
+         set mem($role,cpu,id) $id
+         set mem($role,cpu,wa) $wa
+         set mem($role,cpu,hi) $hi
+         set mem($role,cpu,si) $si
+         set mem($role,cpu,st) $st
+      }
+      if {[regexp $mem_pattern $line match total free used buff_cache]} {
+         set mem($role,mem,total) $total
+         set mem($role,mem,free) $free
+         set mem($role,mem,used) $used
+         set mem($role,mem,buff_cache) $buff_cache
+      }
+      if {[regexp $swap_pattern $line match total free used avail]} {
+         set mem($role,swap,total) $total
+         set mem($role,swap,free) $free
+         set mem($role,swap,used) $used
+         set mem($role,mem,avail) $avail
+      }
+      if {[regexp { root } $line]} {
+         set cols [regexp -all -inline {\S+} $line]
+         set virt [lindex $cols 4]
+         set rss [lindex $cols 5]
+         set cpu [lindex $cols 8]
+         set proc [adjust_proc_name [lindex $cols 11]]
+         if {[regexp {^\d+$} $virt]} {
+            set virt [expr {$virt/1024.0}]
+         } elseif {[regexp {m} $virt]} {
+            regsub -- {m} $virt {} virt
+         } elseif {[regexp {g} $virt]} {
+            regsub -- {g} $virt {} virt
+            set virt [expr {$virt*1024}]
+         } elseif {[regexp {t} $virt]} {
+            regsub -- {t} $virt {} virt
+            set virt [expr {$virt*1024*1024}]
+         }
+         if {[regexp {^\d+$} $rss]} {
+            set rss [expr {$rss/1024.0}]
+         } elseif {[regexp {m} $rss]} {
+            regsub -- {m} $rss {} rss
+         } elseif {[regexp {g} $rss]} {
+            regsub -- {g} $rss {} rss
+            set rss [expr {$rss*1024}]
+         } elseif {[regexp {t} $rss]} {
+            regsub -- {t} $rss {} rss
+            set rss [expr {$rss*1024*1024}]
+         }
+         #on chassis systems like cat9400, there is hman on each slot and there
+         #is no way to tell which pid is running on what slot from ios cli. so
+         #track the total as one unit
+         if {$proc == "hman" || $proc == "cmcc" || $proc == "iomd"} {
+            incr mem($role,$proc,virt) $virt
+            incr mem($role,$proc,rss) $rss
+            incr mem($role,$proc,cpu) $cpu
+         } else {
+            set mem($role,$proc,virt) $virt
+            set mem($role,$proc,rss) $rss
+            set mem($role,$proc,cpu) $cpu
+         }
+      }
+   }
+
+   #Track the CPU averages for all processes on active
+   #sh proc cpu platform only works on active switch
+   if {$role == "a"} {
+      set cmd "show proc cpu platform | in ^CPU |$proc_str"
+      #IOS Tcl has limit on max command length and this cmd can run long
+      set out [exec_potential_long_cmd $cmd]
+      set out [split $out \n]
+      set cpu_pattern {CPU utilization.*seconds: +(\d+%), one minute: +(\d+%), five minutes: +(\d+%)}
+      foreach line $out {
+         if {[regexp $cpu_pattern $line match 5sec 1min 5min]} {
+            set mem($role,cpu,5sec) $5sec
+            set mem($role,cpu,1min) $1min
+            set mem($role,cpu,5min) $5min
+            continue
+         }
+         set cols [regexp -all -inline {\S+} $line]
+         set 5sec [lindex $cols 2]
+         set 1min [lindex $cols 3]
+         set 5min [lindex $cols 4]
+         set proc [adjust_proc_name [lindex $cols 7]]
+         set mem($role,$proc,cpu,5sec) $5sec
+         set mem($role,$proc,cpu,1min) $1min
+         set mem($role,$proc,cpu,5min) $5min
+      }
+   }
+
+   #Track Committed memory
+   if {$platform == "cat9800" || $platform == "cat9100" || $platform == "asr1k" || \
+       $platform == "isr4k" || $platform == "isr1k" || $platform == "csr1k"} {
+       set cmd "sh plat soft status control-processor br | in RP0"
+   } elseif {(($platform == "cat9400" || $platform == "cat9500h" || \
+               $platform == "cat9600") && !$sv_enabled)} {
+       set sw_num [get_switch_num $role]
+       set cmd "sh plat soft status control-processor br | in RP$sw_num"
+   } else {
+       set sw_num [get_switch_num $role]
+       set cmd "sh plat soft status control-processor br | in $sw_num-RP\[01\]"
+   }
+   if {$debug} {puts "Executing $cmd"}
+   set out [exec "$cmd"]
+   set out [split $out \n]
+   foreach line $out {
+      if {[regexp {.* (\d+) +\(\d+%\)} $line match committed]} {
+         set mem($role,mem,committed) $committed
+      }
+   }
+}
+
+proc get_ios_procmem_info {role} {
+   global mem debug
+
+   set mem($role,ios,procmem,all) 0.0
+   set cmd "show proc memory sorted"
+   if {$debug} {puts "Executing $cmd"}
+   set out [exec "$cmd"]
+   set out [split $out \n]
+   foreach line $out {
+      if {[regexp {(\d+) +\d+ +(\d+) +(\d+) +(\d+)[\d\s]+(.*)} \
+           $line match pid allocated freed holding proc]} {
+         set proc [string trim $proc]
+         #these values are too large for 32 bit int, convert to float
+         append allocated e0
+         append freed e0
+         append holding e0
+         if {[info exists mem($role,ios,procmem,$pid,pid)]} {
+            incr mem($role,ios,procmem,$pid,allocated) $allocated
+            incr mem($role,ios,procmem,$pid,freed) $freed
+            incr mem($role,ios,procmem,$pid,holding) $holding
+            set mem($role,ios,procmem,$pid,proc) "$proc+"
+         } else {
+            set mem($role,ios,procmem,$pid,pid) $pid
+            set mem($role,ios,procmem,$pid,allocated) $allocated
+            set mem($role,ios,procmem,$pid,freed) $freed
+            set mem($role,ios,procmem,$pid,holding) $holding
+            set mem($role,ios,procmem,$pid,proc) $proc
+         }
+         incr mem($role,ios,procmem,all) $holding
+      }
+   }
+}
+
+proc get_ios_allocpc_info {role} {
+   global mem debug
+
+   set mem($role,ios,allocpc,all) 0
+   set cmd "show memory allocating-process totals"
+   if {$debug} {puts "Executing $cmd"}
+   set out [exec "$cmd"]
+   set out [split $out \n]
+   foreach line $out {
+      if {[regexp {Tracekey +: +(1#\S+)} $line match tracekey]} {
+         set mem($role,ios,tracekey) $tracekey
+         continue
+      }
+      #Split by fixed length for fields as there is no other good way
+      set total [string range $line 0 8]
+      set count [string range $line 9 16]
+      set name [string range $line 17 41]
+      set pc [string range $line 42 [string length $line]]
+      #process lines that only have allocpc data
+      if {[regexp {\d+} $total] && [regexp {\d+} $count] && [regexp {:} $pc]} {
+         set pc [string trim $pc]
+         set name [string trim $name]
+         set mem($role,ios,allocpc,$pc,pc) $pc
+         set mem($role,ios,allocpc,$pc,total) $total
+         set mem($role,ios,allocpc,$pc,count) $count
+         set mem($role,ios,allocpc,$pc,name) $name
+         incr mem($role,ios,allocpc,all) $total
+      }
+   }
+}
+
+proc get_ios_chunk_info {role} {
+   global mem debug
+   set mem($role,ios,chunk,all) 0.0
+   set cmd "show chunk brief"
+   if {$debug} {puts "Executing $cmd"}
+   set out [exec "$cmd"]
+   set out [split $out \n]
+   foreach line $out {
+      if {[regexp {^(.+) +(\d+) +(\d+) +(\d+)} $line match \
+                   name siblings elements mem_used]} {
+         set name [string trim $name]
+         if {[info exists mem($role,ios,chunk,$name,name)]} {
+            incr mem($role,ios,chunk,$name,elements) $elements
+            incr mem($role,ios,chunk,$name,mem_used) $mem_used
+            incr mem($role,ios,chunk,$name,mem_used) $mem_used
+         } else {
+            set mem($role,ios,chunk,$name,name) $name
+            set mem($role,ios,chunk,$name,siblings) $siblings
+            set mem($role,ios,chunk,$name,elements) $elements
+            set mem($role,ios,chunk,$name,mem_used) $mem_used
+         }
+         incr mem($role,ios,chunk,all) $mem_used
+      }
+   }
+}
+
+proc get_ios_gd_info {role} {
+   global mem debug
+
+   set mem($role,ios,gd,all) 0
+   set out [exec "delete /force flash:tmp.out"]
+   puts "!!! Started sh mem deb leaks, may take several minutes dep on load !!!"
+   puts "!!! to disable: set ios_gd_leaks 0 !!!"
+   ["show memory debug leaks | redirect flash:tmp.out"]
+   set cmd "more flash:tmp.out"
+   if {$debug} {puts "Executing $cmd"}
+   set out [exec "$cmd"]
+   set out [split $out \n]
+   foreach line $out {
+      if {[regexp {^(\w+) +(\d+) +(\d+) +(.{15}) +(.{15}) +(.{25})} $line match \
+                   addr size proc allocproc name pc]} {
+         if {$debug} {puts "regexp addr $addr size $size \
+             proc $proc allocproc $allocproc name $name pc $pc"}
+         set proc [string trim $proc]
+         set name [string trim $name]
+         set pc [string trim $pc]
+         set mem($role,ios,gd,$pc,pc) $pc
+         set mem($role,ios,gd,$pc,proc) $proc
+         set mem($role,ios,gd,$pc,name) $name
+         if {[info exists mem($role,ios,gd,$pc,size)]} {
+            incr mem($role,ios,gd,$pc,size) $size
+            set mem($role,ios,gd,$pc,addr) "$addr"
+         } else {
+            set mem($role,ios,gd,$pc,size) $size
+            set mem($role,ios,gd,$pc,addr) $addr
+         }
+         incr mem($role,ios,gd,all) $size
+      }
+   }
+}
+
+proc get_ios_gdchunk_info {role} {
+   global mem debug
+
+   set match_processor 0
+   set match_chunk 0
+   set mem($role,ios,gdchunk,all) 0
+   #tcl exec is hanging all the other vtys as well (for the duration of the
+   #exec call), let the command be given to ios parser directly
+   set out [exec "delete /force flash:tmp.out"]
+   puts "!!! Started sh mem deb leaks chunks, may take several minutes dep on load !!!"
+   puts "!!! to disable: set ios_gdchunk_leaks 0 !!!"
+   ["show memory debug leaks chunks | redirect flash:tmp.out"]
+   set cmd "more flash:tmp.out"
+   if {$debug} {puts "Executing $cmd"}
+   set out [exec "$cmd"]
+   set out [split $out \n]
+   foreach line $out {
+      if {[regexp {Address        Size  PID   Alloc-Proc        Name               Alloc_pc} \
+          $line]} {
+         if {$debug} {puts "Matching processor"}
+         set match_processor 1
+         set match_chunk 0
+         continue
+      } elseif {[regexp {AllocPC  Address  Size  Parent   Name} $line]} {
+         if {$debug} {puts "Matching chunk $cmd"}
+         set match_chunk 1
+         set match_processor 0
+         continue
+      }
+      if {$match_processor} {
+          if {[regexp {^(\w+) +(\d+) +(\d+) +(.{15}) +(.{15}) +(.{25})} $line match \
+                   addr size proc allocproc name pc]} {
+            set proc [string trim $proc]
+            set name [string trim $name]
+            set pc [string trim $pc]
+            set mem($role,ios,gdchunk,$pc,pc) $pc
+            set mem($role,ios,gdchunk,$pc,name) $name
+            set mem($role,ios,gdchunk,$pc,proc) $proc
+            set mem($role,ios,gdchunk,$pc,parent) "-"
+            if {[info exists mem($role,ios,gdchunk,$pc,size)]} {
+               incr mem($role,ios,gdchunk,$pc,size) $size
+               set mem($role,ios,gdchunk,$pc,addr) "$addr"
+            } else {
+               set mem($role,ios,gdchunk,$pc,size) $size
+               set mem($role,ios,gdchunk,$pc,addr) $addr
+            }
+            incr mem($role,ios,gdchunk,all) $size
+         }
+      } elseif {$match_chunk} {
+         if {[regexp {^(\w+) +(\w+) +(\d+) +(\w+) +(.*)} $line match \
+                      pc addr size parent name]} {
+            set name [string trim $name]
+            set mem($role,ios,gdchunk,$pc,pc) $pc
+            set mem($role,ios,gdchunk,$pc,name) $name
+            set mem($role,ios,gdchunk,$pc,parent) $parent
+            set mem($role,ios,gdchunk,$pc,proc) "-"
+            if {[info exists mem($role,ios,gdchunk,$pc,size)]} {
+               incr mem($role,ios,gdchunk,$pc,size) $size
+               set mem($role,ios,gdchunk,$pc,addr) "$addr+"
+            } else {
+               set mem($role,ios,gdchunk,$pc,size) $size
+               set mem($role,ios,gdchunk,$pc,addr) $addr
+            }
+            incr mem($role,ios,gdchunk,all) $size
+         }
+      }
+   }
+}
+
+proc get_ios_buffer_info {role} {
+   global mem debug
+
+   set mem($role,ios,buffer,all) 0
+   set cmd "show buffers leak"
+   if {$debug} {puts "Executing $cmd"}
+   set out [exec "$cmd"]
+   set out [split $out \n]
+   foreach line $out {
+      if {[regexp {^([0-9A-F]+) +([0-9A-F]+) +(\w+) +(\d+).{42}(.+)$} $line \
+           match hdr data pool size user]} {
+         set user [string trim $user]
+         set mem($role,ios,buffer,$hdr,hdr) $hdr
+         set mem($role,ios,buffer,$hdr,data) $data
+         set mem($role,ios,buffer,$hdr,pool) $pool
+         set mem($role,ios,buffer,$hdr,size) $size
+         set mem($role,ios,buffer,$hdr,user) $user
+         incr mem($role,ios,buffer,all) $size
+      }
+   }
+}
+
+proc get_bmalloc_info {role} {
+   global proc_list mem debug sw_str rp_str fp_str fed_str qfp_str 
+   build_strings $role
+   foreach proc $proc_list {
+      set mem($role,$proc,bmalloc,Summary,allocated) 0
+      set mem($role,$proc,bmalloc,Summary,requested) 0
+      set mem($role,$proc,bmalloc,Summary,allocs) 0
+      set mem($role,$proc,bmalloc,Summary,frees) 0
+      set mem($role,$proc,bmalloc,Summary,allocs_frees) 0
+      switch $proc {
+         fman_rp {set cmd "sh plat soft mem forwar $sw_str $rp_str br"}
+         fman_fp {set cmd "sh plat soft mem forwar $sw_str $fp_str br"}
+         repm {set cmd "sh plat soft mem repl $sw_str $rp_str br"}
+         cli_agent {set cmd "sh plat soft mem cli-agent $sw_str $rp_str br"}
+         smand {set cmd "sh plat soft mem shell $sw_str $rp_str br"}
+         plogd {set cmd "sh plat soft mem logger $sw_str $rp_str br"}
+         hman {set cmd "sh plat soft mem host-manager $sw_str $rp_str br"}
+         lman {set cmd "sh plat soft mem license-manager $sw_str $rp_str br"}
+         bt_logger {set cmd "sh plat soft mem bt-logger $sw_str $rp_str br"}
+         keyman {continue}
+         psd {set cmd "sh plat soft mem pluggable $sw_str $rp_str br"}
+         tms {set cmd "sh plat soft mem table-manager $sw_str $rp_str br"}
+         fed {set cmd "sh plat soft mem fed $sw_str $fed_str br"}
+         platform {set cmd "sh plat soft mem platform $sw_str $rp_str br"}
+         sif_mgr {set cmd "sh plat soft mem sif $sw_str $rp_str br"}
+         stack_mgr {set cmd "sh plat soft mem stack $sw_str $rp_str br"}
+         wncmgrd {set cmd "sh plat soft mem wireless $sw_str $rp_str br"}
+         odm_proxy {set cmd "sh plat soft mem odm-proxy $sw_str $rp_str br"}
+         sessmgrd {set cmd "sh plat soft mem smd $sw_str $rp_str br"}
+         pubd {set cmd "sh plat soft mem mdt-pubd $sw_str $rp_str br"}
+         ndbmand {set cmd "sh plat soft mem ndbman $sw_str $rp_str br"}
+         pttcd {continue}
+         ncsshd {continue}
+         confd {continue}
+         btman {set cmd "sh plat soft mem btrace-m $sw_str $rp_str br"}
+         cmand {set cmd "sh plat soft mem chassis-manager $sw_str $rp_str br"}
+         cman_fp {set cmd "sh plat soft mem chassis-manager $sw_str $fp_str br"}
+         cmcc {continue}
+         iomd {continue}
+         vman {set cmd "sh plat soft mem virt-manager $sw_str $rp_str br"}
+         rif_mgr {continue}
+         cpp_cp_svr {set cmd "sh plat soft mem qfp-control $sw_str $qfp_str br"}
+         cpp_driver {set cmd "sh plat soft mem qfp-driver $sw_str $qfp_str br"}
+         cpp_ha {set cmd "sh plat soft mem qfp-ha $sw_str $qfp_str br"}
+         cpp_sp_svr {set cmd "sh plat soft mem qfp-service $sw_str $qfp_str br"}
+         default {set cmd "sh plat soft mem $proc $sw_str $rp_str br"}
+      }
+      if {[regexp {(.*)_(\d+)$} $proc match myproc instance]} {
+          switch $myproc {
+             wncd {set cmd "sh plat soft mem wncd $instance $sw_str $rp_str br"}
+             hman {set cmd "sh plat soft mem host $sw_str $instance br"}
+             cmcc {set cmd "sh plat soft mem chassis $sw_str $instance br"}
+             iomd {set cmd "sh plat soft mem iomd $sw_str $instance/0 br"}
+          }
+      }
+      if {$debug} {puts "Executing $cmd"}
+      set out [exec $cmd]
+      set out [split $out \n]
+      foreach line $out {
+         if {[regexp {(.*) +(\d+) +(\d+) +(\d+) +(\d+)} $line match \
+                        module allocated requested allocs frees]} {
+            set module [string trim $module]
+            append allocated e0
+            append requested e0
+            append allocs e0
+            append frees e0
+            if {[info exists mem($role,$proc,bmalloc,$module,allocated)]} {
+               incr mem($role,$proc,bmalloc,$module,allocated) $allocated
+               incr mem($role,$proc,bmalloc,$module,requested) $requested
+               incr mem($role,$proc,bmalloc,$module,allocs) $allocs
+               incr mem($role,$proc,bmalloc,$module,frees) $frees
+               incr mem($role,$proc,bmalloc,$module,allocs_frees) \
+                    [expr {$allocs-$frees}]
+            } else {
+               set mem($role,$proc,bmalloc,$module,allocated) $allocated
+               set mem($role,$proc,bmalloc,$module,requested) $requested
+               set mem($role,$proc,bmalloc,$module,allocs) $allocs
+               set mem($role,$proc,bmalloc,$module,frees) $frees
+               set mem($role,$proc,bmalloc,$module,allocs_frees) \
+                   [expr {$allocs-$frees}]
+            }
+         }
+      }
+   }
+}
+
+proc get_bmchunk_info {role} {
+   global proc_list mem debug sw_str rp_str fp_str fed_str qfp_str 
+   build_strings $role
+   foreach proc $proc_list {
+      set mem($role,$proc,bmchunk,all,inuse) 0
+      set mem($role,$proc,bmchunk,all,free) 0
+      set mem($role,$proc,bmchunk,all,allocs) 0
+      set mem($role,$proc,bmchunk,all,frees) 0
+      set mem($role,$proc,bmchunk,all,allocs_frees) 0
+      switch $proc {
+         fman_rp {set cmd "sh plat soft mem chunk forwar $sw_str $rp_str"}
+         fman_fp {set cmd "sh plat soft mem chunk forwar $sw_str $fp_str"}
+         repm {set cmd "sh plat soft mem chunk repl $sw_str $rp_str"}
+         cli_agent {set cmd "sh plat soft mem chunk cli-agent $sw_str $rp_str"}
+         smand {set cmd "sh plat soft mem chunk shell $sw_str $rp_str"}
+         plogd {set cmd "sh plat soft mem chunk logger $sw_str $rp_str"}
+         hman {set cmd "sh plat soft mem chunk host-manager $sw_str $rp_str"}
+         lman {set cmd "sh plat soft mem chunk license-manager $sw_str $rp_str"}
+         bt_logger {set cmd "sh plat soft mem chunk bt-logger $sw_str $rp_str"}
+         keyman {continue}
+         psd {set cmd "sh plat soft mem chunk pluggable $sw_str $rp_str"}
+         tms {set cmd "sh plat soft mem chunk table-manager $sw_str $rp_str"}
+         fed {set cmd "sh plat soft mem chunk fed $sw_str $fed_str"}
+         platform {set cmd "sh plat soft mem chunk platform $sw_str $rp_str"}
+         sif_mgr {set cmd "sh plat soft mem chunk sif $sw_str $rp_str"}
+         stack_mgr {set cmd "sh plat soft mem chunk stack $sw_str $rp_str"}
+         wncmgrd {set cmd "sh plat soft mem chunk wireless $sw_str $rp_str"}
+         odm_proxy {set cmd "sh plat soft mem chunk odm-proxy $sw_str $rp_str"}
+         sessmgrd {set cmd "sh plat soft mem chunk smd $sw_str $rp_str"}
+         pubd {set cmd "sh plat soft mem chunk mdt-pubd $sw_str $rp_str"}
+         ndbmand {set cmd "sh plat soft mem chunk ndbman $sw_str $rp_str"}
+         pttcd {continue}
+         ncsshd {continue}
+         confd {continue}
+         btman {set cmd "sh plat soft mem chunk btrace-m $sw_str $rp_str"}
+         cmand {set cmd "sh plat soft mem chunk chassis-manager $sw_str $rp_str"}
+         cman_fp {set cmd "sh plat soft mem chunk chassis-manager $sw_str $fp_str"}
+         cmcc {continue}
+         iomd {continue}
+         vman {set cmd "sh plat soft mem chunk virt-manager $sw_str $rp_str"}
+         rif_mgr {continue}
+         cpp_cp_svr {set cmd "sh plat soft mem chunk qfp-control $sw_str $qfp_str"}
+         cpp_driver {set cmd "sh plat soft mem chunk qfp-driver $sw_str $qfp_str"}
+         cpp_ha {set cmd "sh plat soft mem chunk qfp-ha $sw_str $qfp_str"}
+         cpp_sp_svr {set cmd "sh plat soft mem chunk qfp-service $sw_str $qfp_str"}
+         default {set cmd "sh plat soft mem chunk $proc $sw_str $rp_str"}
+      }
+      if {[regexp {(.*)_(\d+)$} $proc match myproc instance]} {
+          switch $myproc {
+             wncd {set cmd "sh plat soft mem chunk wncd $instance $sw_str $rp_str"}
+             hman {set cmd "sh plat soft mem chunk host $sw_str $instance"}
+             cmcc {set cmd "sh plat soft mem chunk chassis $sw_str $instance"}
+             iomd {set cmd "sh plat soft mem chunk iomd $sw_str $instance/0"}
+          }
+      }
+      if {$debug} {puts "Executing $cmd"}
+      set out [exec $cmd]
+      set out [split $out \n]
+      foreach line $out {
+         if {[regexp \
+             {(.*) +\d+ +\d+ +\d+ +(\d+) +(\d+) +\d+ +\d+ +\d+ +(\d+) +(\d+) +\d+ +\d+} \
+             $line match module inuse free allocs frees]} {
+            set module [string trim $module]
+            append inuse e0
+            append free e0
+            append allocs e0
+            append frees e0
+            if {[info exists mem($role,$proc,bmchunk,$module,inuse)]} {
+               incr mem($role,$proc,bmchunk,$module,inuse) $inuse
+               incr mem($role,$proc,bmchunk,$module,free) $free
+               incr mem($role,$proc,bmchunk,$module,allocs) $allocs
+               incr mem($role,$proc,bmchunk,$module,frees) $frees
+               incr mem($role,$proc,bmchunk,$module,allocs_frees) \
+                    [expr {$allocs-$frees}]
+            } else {
+               set mem($role,$proc,bmchunk,$module,inuse) $inuse
+               set mem($role,$proc,bmchunk,$module,free) $free
+               set mem($role,$proc,bmchunk,$module,allocs) $allocs
+               set mem($role,$proc,bmchunk,$module,frees) $frees
+               set mem($role,$proc,bmchunk,$module,allocs_frees) \
+                   [expr {$allocs-$frees}]
+            }
+            incr mem($role,$proc,bmchunk,all,inuse) $inuse
+            incr mem($role,$proc,bmchunk,all,free) $free
+            incr mem($role,$proc,bmchunk,all,allocs) $allocs
+            incr mem($role,$proc,bmchunk,all,frees) $frees
+            incr mem($role,$proc,bmchunk,all,allocs_frees) \
+                 [expr {$allocs-$frees}]
+         }
+      }
+   }
+}
+
+proc get_tdlmsg_info {role} {
+   global proc_list mem debug sw_str rp_str fp_str fed_str qfp_str 
+   build_strings $role
+   foreach proc $proc_list {
+      set mem($role,$proc,tdlmsg,all) 0
+      switch $proc {
+         fman_rp {set cmd "sh plat soft mem messaging forwar $sw_str $rp_str br"}
+         fman_fp {set cmd "sh plat soft mem messaging forwar $sw_str $fp_str br"}
+         repm {set cmd "sh plat soft mem messag repl $sw_str $rp_str br"}
+         cli_agent {set cmd "sh plat soft mem messag cli-agent $sw_str $rp_str br"}
+         smand {set cmd "sh plat soft mem messag shell $sw_str $rp_str br"}
+         plogd {set cmd "sh plat soft mem messag logger $sw_str $rp_str br"}
+         hman {set cmd "sh plat soft mem messag host-manager $sw_str $rp_str br"}
+         lman {set cmd "sh plat soft mem messag license-manager $sw_str $rp_str br"}
+         bt_logger {set cmd "sh plat soft mem messag bt-logger $sw_str $rp_str br"}
+         keyman {continue}
+         psd {set cmd "sh plat soft mem messag pluggable $sw_str $rp_str br"}
+         tms {set cmd "sh plat soft mem messaging table-manager $sw_str $rp_str br"}
+         fed {set cmd "sh plat soft mem messaging fed $sw_str $fed_str br"}
+         platform {set cmd "sh plat soft mem messag platform $sw_str $rp_str br"}
+         sif_mgr {set cmd "sh plat soft mem messag sif $sw_str $rp_str br"}
+         stack_mgr {set cmd "sh plat soft mem messag stack $sw_str $rp_str br"}
+         wncmgrd {set cmd "sh plat soft mem messag wireless $sw_str $rp_str br"}
+         odm_proxy {set cmd "sh plat soft mem messag odm-proxy $sw_str $rp_str br"}
+         sessmgrd {set cmd "sh plat soft mem messag smd $sw_str $rp_str br"}
+         pubd {set cmd "sh plat soft mem messag mdt-pubd $sw_str $rp_str br"}
+         ndbmand {set cmd "sh plat soft mem messag ndbman $sw_str $rp_str br"}
+         pttcd {continue}
+         ncsshd {continue}
+         confd {continue}
+         btman {set cmd "sh plat soft mem messag btrace-m $sw_str $rp_str br"}
+         cmand {set cmd "sh plat soft mem messag chassis-manager $sw_str $rp_str br"}
+         cman_fp {set cmd "sh plat soft mem messag chassis-manager $sw_str $fp_str br"}
+         cmcc {continue}
+         iomd {continue}
+         vman {set cmd "sh plat soft mem messag virt-manager $sw_str $rp_str br"}
+         rif_mgr {continue}
+         cpp_cp_svr {set cmd "sh plat soft mem messag qfp-control $sw_str $qfp_str br"}
+         cpp_driver {set cmd "sh plat soft mem messag qfp-driver $sw_str $qfp_str br"}
+         cpp_ha {set cmd "sh plat soft mem messag qfp-ha $sw_str $qfp_str br"}
+         cpp_sp_svr {set cmd "sh plat soft mem messag qfp-service $sw_str $qfp_str br"}
+         default {set cmd "sh plat soft mem messaging $proc $sw_str $rp_str br"}
+      }
+      if {[regexp {(.*)_(\d+)$} $proc match myproc instance]} {
+          switch $myproc {
+             wncd {set cmd "sh plat soft mem messag wncd $instance $sw_str $rp_str br"}
+             hman {set cmd "sh plat soft mem messag host $sw_str $instance br"}
+             cmcc {set cmd "sh plat soft mem messag chassis $sw_str $instance br"}
+             iomd {set cmd "sh plat soft mem messag iomd $sw_str $instance/0 br"}
+          }
+      }
+      if {$debug} {puts "Executing $cmd"}
+      set out [exec $cmd]
+      set out [split $out \n]
+      foreach line $out {
+         if {[regexp {(\d+) entries .* (\w*)} $line match \
+                        entries type_msg]} {
+            append entries e0
+            if {[info exists mem($role,$proc,tdlmsg,$type_msg)]} {
+               incr mem($role,$proc,tdlmsg,$type_msg) $entries
+            } else {
+               set mem($role,$proc,tdlmsg,$type_msg) $entries
+            }
+            incr mem($role,$proc,tdlmsg,all) $entries
+         }
+      }
+   }
+}
+
+proc get_tdldb_info {role} {
+   global proc_list mem debug sw_str rp_str fp_str
+   build_strings $role
+   foreach proc $proc_list {
+      set cmd ""
+      set mem($role,$proc,tdldb,all) 0e0
+      #IOS, fman_fp FED, platform, sif, stack_mgr,table-manager do not have tdl databases
+      switch $proc {
+         ios {set cmd "sh plat soft mem database ios $sw_str $rp_str br"}
+         fman_rp {set cmd "sh plat soft mem database forwar $sw_str $rp_str br"}
+         repm {set cmd "sh plat soft mem database repl $sw_str $rp_str br"}
+         dbm {set cmd "sh plat soft mem database $proc $sw_str $rp_str br"}
+         cli_agent {set cmd "sh plat soft mem database cli-agent $sw_str $rp_str br"}
+         smand {set cmd "sh plat soft mem database shell $sw_str $rp_str br"}
+         bt_logger {set cmd "sh plat soft mem database bt-logger $sw_str $rp_str br"}
+         sessmgrd {set cmd "sh plat soft mem database smd $sw_str $rp_str br"}
+         wncd {set cmd "sh plat soft mem database $proc $sw_str $rp_str br"}
+         wncmgrd {set cmd "sh plat soft mem database wireless $sw_str $rp_str br"}
+         rrm {set cmd "sh plat soft mem database $proc $sw_str $rp_str br"}
+         rogued {set cmd "sh plat soft mem database $proc $sw_str $rp_str br"}
+         odm {set cmd "sh plat soft mem database $proc $sw_str $rp_str br"}
+         odm_proxy {set cmd "sh plat soft mem database odm-proxy $sw_str $rp_str br"}
+         mobilityd {set cmd "sh plat soft mem database $proc $sw_str $rp_str br"}
+         nmspd {set cmd "sh plat soft mem database $proc $sw_str $rp_str br"}
+         vman {set cmd "sh plat soft mem database virt-manager $sw_str $rp_str br"}
+         pubd {set cmd "sh plat soft mem database mdt-pubd $sw_str $rp_str br"}
+         ndbmand {set cmd "sh plat soft mem database ndbman $sw_str $rp_str br"}
+         pttcd {continue}
+         ncsshd {continue}
+         confd {continue}
+         wstatsd {set cmd "sh plat soft mem database $proc $sw_str $rp_str br"}
+      }
+      if {[regexp {(.*)_(\d+)$} $proc match myproc instance]} {
+          switch $myproc {
+             wncd {set cmd "sh plat soft mem database wncd $instance $sw_str $rp_str br"}
+          }
+      }
+      if {$cmd == ""} {
+          continue
+      }
+      if {$debug} {puts "Executing $cmd"}
+      set out [exec $cmd]
+      set out [split $out \n]
+      foreach line $out {
+         if {[regexp {(\d+) entries .* (\w*)} $line match \
+                        entries type_msg]} {
+            append entries e0
+            if {[info exists mem($role,$proc,tdldb,$type_msg)]} {
+               incr mem($role,$proc,tdldb,$type_msg) $entries
+            } else {
+               set mem($role,$proc,tdldb,$type_msg) $entries
+            }
+            incr mem($role,$proc,tdldb,all) $entries
+         }
+      }
+   }
+}
+
+proc get_alloc_comp_info {role} {
+   global proc_list mem debug sw_str rp_str fp_str fed_str qfp_str 
+   build_strings $role
+   foreach proc $proc_list {
+      set mem($role,$proc,alloc_comp,Summary,allocated) 0
+      set mem($role,$proc,alloc_comp,Summary,requested) 0
+      set mem($role,$proc,alloc_comp,Summary,allocs) 0
+      set mem($role,$proc,alloc_comp,Summary,frees) 0
+      set mem($role,$proc,alloc_comp,Summary,allocs_frees) 0
+      switch $proc {
+         fman_rp {set cmd "sh plat soft mem forwar $sw_str $rp_str alloc type comp br"}
+         fman_fp {set cmd "sh plat soft mem forwar $sw_str $fp_str alloc type comp br"}
+         repm {set cmd "sh plat soft mem repl $sw_str $rp_str alloc type comp br"}
+         cli_agent {set cmd "sh plat soft mem cli-agent $sw_str $rp_str alloc type comp br"}
+         smand {set cmd "sh plat soft mem shell $sw_str $rp_str alloc type comp br"}
+         plogd {set cmd "sh plat soft mem logger $sw_str $rp_str alloc type comp br"}
+         hman {set cmd "sh plat soft mem host-manager $sw_str $rp_str alloc type comp br"}
+         lman {set cmd "sh plat soft mem license-manager $sw_str $rp_str alloc type comp br"}
+         bt_logger {set cmd "sh plat soft mem bt-logger $sw_str $rp_str alloc type comp br"}
+         keyman {continue}
+         psd {set cmd "sh plat soft mem pluggable $sw_str $rp_str alloc type comp br"}
+         tms {set cmd "sh plat soft mem table-manager $sw_str $rp_str alloc type comp br"}
+         fed {set cmd "sh plat soft mem fed $sw_str $fed_str alloc type comp br"}
+         platform_m {set cmd "sh plat soft mem platform $sw_str $rp_str alloc type comp br"}
+         sif_mgr {set cmd "sh plat soft mem sif $sw_str $rp_str alloc type comp br"}
+         stack_mgr {set cmd "sh plat soft mem stack $sw_str $rp_str alloc type comp br"}
+         wncmgrd {set cmd "sh plat soft mem wireless $sw_str $rp_str alloc type comp br"}
+         odm_proxy {set cmd "sh plat soft mem odm-proxy $sw_str $rp_str alloc type comp br"}
+         sessmgrd {set cmd "sh plat soft mem smd $sw_str $rp_str alloc type comp br"}
+         btman {set cmd "sh plat soft mem btrace-m $sw_str $rp_str alloc type comp br"}
+         pubd {set cmd "sh plat soft mem mdt-pubd $sw_str $rp_str alloc type comp br"}
+         ndbmand {set cmd "sh plat soft mem ndbman $sw_str $rp_str alloc type comp br"}
+         pttcd {continue}
+         ncsshd {continue}
+         confd {continue}
+         cmand {set cmd "sh plat soft mem chassis-manager $sw_str $rp_str alloc type comp br"}
+         cman_fp {set cmd "sh plat soft mem chassis-manager $sw_str $fp_str alloc type comp br"}
+         cmcc {continue}
+         iomd {continue}
+         vman {set cmd "sh plat soft mem virt-manager $sw_str $rp_str alloc type comp br"}
+         rif_mgr {continue}
+         cpp_cp_svr {set cmd "sh plat soft mem qfp-control $sw_str $qfp_str alloc type comp br"}
+         cpp_driver {set cmd "sh plat soft mem qfp-driver $sw_str $qfp_str alloc type comp br"}
+         cpp_ha {set cmd "sh plat soft mem qfp-ha $sw_str $qfp_str alloc type comp br"}
+         cpp_sp_svr {set cmd "sh plat soft mem qfp-service $sw_str $qfp_str alloc type comp br"}
+         default {set cmd "sh plat soft mem $proc $sw_str $rp_str alloc type comp br"}
+      }
+      if {[regexp {(.*)_(\d+)$} $proc match myproc instance]} {
+          switch $myproc {
+             wncd {set cmd "sh plat soft mem wncd $instance $sw_str $rp_str alloc type comp br"}
+             hman {set cmd "sh plat soft mem host $sw_str $instance alloc type comp br"}
+             cmcc {set cmd "sh plat soft mem chassis $sw_str $instance alloc type comp br"}
+             iomd {set cmd "sh plat soft mem iomd $sw_str $instance/0 alloc type comp br"}
+          }
+      }
+      if {$debug} {puts "Executing $cmd"}
+      set out [exec $cmd]
+      set out [split $out \n]
+      foreach line $out {
+         if {[regexp {(.*) +(\d+) +(\d+) +(\d+) +(\d+)} $line match \
+                        module allocated requested allocs frees]} {
+            set module [string trim $module]
+            append allocated e0
+            append requested e0
+            append allocs e0
+            append frees e0
+            if {[info exists mem($role,$proc,alloc_comp,$module,allocated)]} {
+               incr mem($role,$proc,alloc_comp,$module,allocated) $allocated
+               incr mem($role,$proc,alloc_comp,$module,requested) $requested
+               incr mem($role,$proc,alloc_comp,$module,allocs) $allocs
+               incr mem($role,$proc,alloc_comp,$module,frees) $frees
+               incr mem($role,$proc,alloc_comp,$module,allocs_frees) [expr {$allocs-$frees}]
+            } else {
+               set mem($role,$proc,alloc_comp,$module,allocated) $allocated
+               set mem($role,$proc,alloc_comp,$module,requested) $requested
+               set mem($role,$proc,alloc_comp,$module,allocs) $allocs
+               set mem($role,$proc,alloc_comp,$module,frees) $frees
+               set mem($role,$proc,alloc_comp,$module,allocs_frees) \
+                   [expr {$allocs-$frees}]
+            }
+         }
+      }
+   }
+}
+
+proc get_alloc_data_info {role} {
+   global proc_list mem debug sw_str rp_str fp_str fed_str qfp_str 
+   build_strings $role
+   foreach proc $proc_list {
+      set mem($role,$proc,alloc_data,Summary,allocated) 0
+      set mem($role,$proc,alloc_data,Summary,requested) 0
+      set mem($role,$proc,alloc_data,Summary,allocs) 0
+      set mem($role,$proc,alloc_data,Summary,frees) 0
+      set mem($role,$proc,alloc_data,Summary,allocs_frees) 0
+      switch $proc {
+         fman_rp {set cmd "sh plat soft mem forwar $sw_str $rp_str alloc type data br"}
+         fman_fp {set cmd "sh plat soft mem forwar $sw_str $fp_str alloc type data br"}
+         repm {set cmd "sh plat soft mem repl $sw_str $rp_str alloc type data br"}
+         cli_agent {set cmd "sh plat soft mem cli-agent $sw_str $rp_str alloc type data br"}
+         smand {set cmd "sh plat soft mem shell $sw_str $rp_str alloc type data br"}
+         plogd {set cmd "sh plat soft mem logger $sw_str $rp_str alloc type data br"}
+         hman {set cmd "sh plat soft mem host-manager $sw_str $rp_str alloc type data br"}
+         lman {set cmd "sh plat soft mem license-manager $sw_str $rp_str alloc type data br"}
+         bt_logger {set cmd "sh plat soft mem bt-logger $sw_str $rp_str alloc type data br"}
+         keyman {continue}
+         psd {set cmd "sh plat soft mem pluggable $sw_str $rp_str alloc type data br"}
+         tms {set cmd "sh plat soft mem table-manager $sw_str $rp_str alloc type data br"}
+         fed {set cmd "sh plat soft mem fed $sw_str $fed_str alloc type data br"}
+         platform_m {set cmd "sh plat soft mem platform $sw_str $rp_str alloc type data br"}
+         sif_mgr {set cmd "sh plat soft mem sif $sw_str $rp_str alloc type data br"}
+         stack_mgr {set cmd "sh plat soft mem stack $sw_str $rp_str alloc type data br"}
+         wncmgrd {set cmd "sh plat soft mem wireless $sw_str $rp_str alloc type data br"}
+         odm_proxy {set cmd "sh plat soft mem odm-proxy $sw_str $rp_str alloc type data br"}
+         sessmgrd {set cmd "sh plat soft mem smd $sw_str $rp_str alloc type data br"}
+         btman {set cmd "sh plat soft mem btrace-m $sw_str $rp_str alloc type data br"}
+         pubd {set cmd "sh plat soft mem mdt-pubd $sw_str $rp_str alloc type data br"}
+         ndbmand {set cmd "sh plat soft mem ndbman $sw_str $rp_str alloc type data br"}
+         pttcd {continue}
+         ncsshd {continue}
+         confd {continue}
+         cmand {set cmd "sh plat soft mem chassis-manager $sw_str $rp_str alloc type data br"}
+         cman_fp {set cmd "sh plat soft mem chassis-manager $sw_str $fp_str alloc type data  br"}
+         cmcc {continue}
+         iomd {continue}
+         vman {set cmd "sh plat soft mem virt-manager $sw_str $rp_str alloc type data br"}
+         rif_mgr {continue}
+         cpp_cp_svr {set cmd "sh plat soft mem qfp-control $sw_str $qfp_str alloc type data br"}
+         cpp_driver {set cmd "sh plat soft mem qfp-driver $sw_str $qfp_str alloc type data br"}
+         cpp_ha {set cmd "sh plat soft mem qfp-ha $sw_str $qfp_str alloc type data br"}
+         cpp_sp_svr {set cmd "sh plat soft mem qfp-service $sw_str $qfp_str alloc type data br"}
+         default {set cmd "sh plat soft mem $proc $sw_str $rp_str alloc type data br"}
+      }
+      if {[regexp {(.*)_(\d+)$} $proc match myproc instance]} {
+          switch $myproc {
+             wncd {set cmd "sh plat soft mem wncd $instance $sw_str $rp_str alloc type data br"}
+             hman {set cmd "sh plat soft mem host $sw_str $instance alloc type data br"}
+             cmcc {set cmd "sh plat soft mem chassis $sw_str $instance alloc type data br"}
+             iomd {set cmd "sh plat soft mem iomd $sw_str $instance/0 alloc type data br"}
+          }
+      }
+      if {$debug} {puts "Executing $cmd"}
+      set out [exec $cmd]
+      set out [split $out \n]
+      foreach line $out {
+         if {[regexp {(.*) +(\d+) +(\d+) +(\d+) +(\d+)} $line match \
+                        module allocated requested allocs frees]} {
+            set module [string trim $module]
+            append allocated e0
+            append requested e0
+            append allocs e0
+            append frees e0
+            if {[info exists mem($role,$proc,alloc_data,$module,allocated)]} {
+               incr mem($role,$proc,alloc_data,$module,allocated) $allocated
+               incr mem($role,$proc,alloc_data,$module,requested) $requested
+               incr mem($role,$proc,alloc_data,$module,allocs) $allocs
+               incr mem($role,$proc,alloc_data,$module,frees) $frees
+               incr mem($role,$proc,alloc_data,$module,allocs_frees) [expr {$allocs-$frees}]
+            } else {
+               set mem($role,$proc,alloc_data,$module,allocated) $allocated
+               set mem($role,$proc,alloc_data,$module,requested) $requested
+               set mem($role,$proc,alloc_data,$module,allocs) $allocs
+               set mem($role,$proc,alloc_data,$module,frees) $frees
+               set mem($role,$proc,alloc_data,$module,allocs_frees) \
+                   [expr {$allocs-$frees}]
+            }
+         }
+      }
+   }
+}
+
+proc get_callsite_info {role} {
+   global proc_list mem debug sw_str rp_str fp_str fed_str qfp_str 
+   build_strings $role
+   foreach proc $proc_list {
+      set mem($role,$proc,mmalloc,all) 0
+      switch $proc {
+         fman_rp {set cmd "sh plat soft mem forwar $sw_str $rp_str alloc call br"}
+         fman_fp {set cmd "sh plat soft mem forwar $sw_str $fp_str alloc call br"}
+         repm {set cmd "sh plat soft mem repl $sw_str $rp_str alloc call br"}
+         cli_agent {set cmd "sh plat soft mem cli-agent $sw_str $rp_str alloc call br"}
+         smand {set cmd "sh plat soft mem shell $sw_str $rp_str alloc call br"}
+         plogd {set cmd "sh plat soft mem logger $sw_str $rp_str alloc call br"}
+         hman {set cmd "sh plat soft mem host-manager $sw_str $rp_str alloc call br"}
+         lman {set cmd "sh plat soft mem license-manager $sw_str $rp_str alloc call br"}
+         bt_logger {set cmd "sh plat soft mem bt-logger $sw_str $rp_str alloc call br"}
+         keyman {continue}
+         psd {set cmd "sh plat soft mem pluggable $sw_str $rp_str alloc call br"}
+         tms {set cmd "sh plat soft mem table-manager $sw_str $rp_str alloc call br"}
+         fed {set cmd "sh plat soft mem fed $sw_str $fed_str alloc call br"}
+         platform {set cmd "sh plat soft mem platform $sw_str $rp_str alloc call br"}
+         sif_mgr {set cmd "sh plat soft mem sif $sw_str $rp_str alloc call br"}
+         stack_mgr {set cmd "sh plat soft mem stack $sw_str $rp_str alloc call br"}
+         wncmgrd {set cmd "sh plat soft mem wireless $sw_str $rp_str alloc call br"}
+         odm_proxy {set cmd "sh plat soft mem odm-proxy $sw_str $rp_str alloc call br"}
+         sessmgrd {set cmd "sh plat soft mem smd $sw_str $rp_str alloc call br"}
+         btman {set cmd "sh plat soft mem btrace-m $sw_str $rp_str alloc call br"}
+         pubd {set cmd "sh plat soft mem mdt-pubd $sw_str $rp_str alloc call br"}
+         ndbmand {set cmd "sh plat soft mem ndbman $sw_str $rp_str alloc call br"}
+         pttcd {continue}
+         ncsshd {continue}
+         confd {continue}
+         cmand {set cmd "sh plat soft mem chassis-manager $sw_str $rp_str alloc call br"}
+         cman_fp {set cmd "sh plat soft mem chassis-manager $sw_str $fp_str alloc call br"}
+         cmcc {continue}
+         iomd {continue}
+         vman {set cmd "sh plat soft mem virt-manager $sw_str $rp_str alloc call br"}
+         rif_mgr {continue}
+         cpp_cp_svr {set cmd "sh plat soft mem qfp-control $sw_str $qfp_str alloc call br"}
+         cpp_driver {set cmd "sh plat soft mem qfp-driver $sw_str $qfp_str alloc call br"}
+         cpp_ha {set cmd "sh plat soft mem qfp-ha $sw_str $qfp_str alloc call br"}
+         cpp_sp_svr {set cmd "sh plat soft mem qfp-service $sw_str $qfp_str alloc call br"}
+         default {set cmd "sh plat soft mem $proc $sw_str $rp_str alloc call br"}
+      }
+      if {[regexp {(.*)_(\d+)$} $proc match myproc instance]} {
+          switch $myproc {
+             wncd {set cmd "sh plat soft mem wncd $instance $sw_str $rp_str alloc call br"}
+             hman {set cmd "sh plat soft mem host $sw_str $instance alloc call br"}
+             cmcc {set cmd "sh plat soft mem chassis $sw_str $instance alloc call br"}
+             iomd {set cmd "sh plat soft mem iomd $sw_str $instance/0 alloc call br"}
+          }
+      }
+      if {$debug} {puts "Executing $cmd"}
+      set out [exec $cmd]
+      set out [split $out \n]
+      set mem($role,$proc,tracekey) ""
+      foreach line $out {
+         if {[regexp {current tracekey is +: +(1#\S+)} $line match tracekey]} {
+            set mem($role,$proc,tracekey) $tracekey
+            continue
+         }
+         if {[regexp { +(\d+) +(\d+) +(\d+) +(\d+)} $line match \
+                        callsite thread diff_bytes diff_calls]} {
+            append diff_bytes e0
+            append diff_calls e0
+            if {[info exists mem($role,$proc,mmalloc,$callsite,call_site)]} {
+               incr mem($role,$proc,mmalloc,$callsite,diff_byte) $diff_byte
+               incr mem($role,$proc,mmalloc,$callsite,diff_calls) $diff_calls
+            } else {
+               set mem($role,$proc,mmalloc,$callsite,callsite) $callsite
+               set mem($role,$proc,mmalloc,$callsite,thread) $thread
+               set mem($role,$proc,mmalloc,$callsite,diff_bytes) $diff_bytes
+               set mem($role,$proc,mmalloc,$callsite,diff_calls) $diff_calls
+            }
+            incr mem($role,$proc,mmalloc,all) $diff_bytes
+         }
+      }
+   }
+}
+
+proc get_smaps_info {role} {
+   global proc_list mem debug sw_str rp_str fp_str
+   build_strings $role
+   foreach proc $proc_list {
+      set mem($role,$proc,smaps,all,rss) 0
+      set mem($role,$proc,smaps,all,addr) "all"
+      set mem($role,$proc,smaps,all,path) "all"
+      switch $proc {
+         default {set cmd "sh plat soft proc mem $sw_str $rp_str name $proc smaps"}
+      }
+      #Per slot commands for hman, cmcc and iomd do not work, they show all
+      #processes, so the above already has cumulative info for all the slot
+      #processes
+      #if {[regexp {(.*)_(\d+)$} $proc match myproc instance]} {
+      #    switch $myproc {
+      #       hman {set cmd "sh plat soft proc mem $instance name hman smaps"}
+      #       cmcc {set cmd "sh plat soft proc mem $instance name cmcc smaps"}
+      #       iomd {set cmd "sh plat soft proc mem $instance name iomd smaps"}
+      #    }
+      #}
+      if {$debug} {puts "Executing $cmd"}
+      set out [exec $cmd]
+      set out [split $out \n]
+      set prev_line ""
+      foreach line $out {
+         if {[regexp {^Size: } $line]} {
+            set list [regexp -all -inline {\S+} $prev_line]
+            set addr [lindex $list 0]
+            set path [lindex $list 5]
+            regsub -- {.*/} $path {} path
+         }
+         if {[regexp {^Rss: +(\d+) } $line match rss]} {
+            if {[info exists mem($role,$proc,smaps,$addr,addr]} {
+               incr mem($role,$proc,smaps,$addr,rss) $rss
+               append mem($role,$proc,smaps,$addr,path) $path
+            } else {
+               set mem($role,$proc,smaps,$addr,addr) $addr
+               set mem($role,$proc,smaps,$addr,rss) $rss
+               set mem($role,$proc,smaps,$addr,path) $path
+            }
+            incr mem($role,$proc,smaps,all,rss) $rss
+         }
+         set prev_line $line
+      }
+   }
+}
+
+proc get_qfp_mem_info {role} {
+   global mem debug platform sw_str rp_str fp_str qfp_str
+   build_strings $role
+   set cmd "show platform hard $sw_str $qfp_str infra exmem statistics user"
+   if {$debug} {puts "Executing $cmd"}
+   set out [exec "$cmd"]
+   set out [split $out \n]
+   foreach mem_type "iram global local local_pvt unmap_local unmap_global" {
+      set mem($role,qfp,$mem_type,all,allocs) 0
+      set mem($role,qfp,$mem_type,all,total) 0
+   }
+   foreach line $out {
+      if {[regexp {Type: +Name: +(\w+),} $line match mem_type]} {
+         set mem_type [string tolower $mem_type]
+         continue
+      }
+      if {[regexp {(\d+) +(\d+) +(\d+) +(.*)} $line match \
+                     allocs allocated total module]} {
+         set module [string trim $module]
+         if {[info exists mem($role,qfp,$mem_type,$module,allocated)]} {
+            incr mem($role,qfp,$mem_type,$module,allocs) $allocs
+            incr mem($role,qfp,$mem_type,$module,allocated) $allocated
+            incr mem($role,qfp,$mem_type,$module,total) $total
+         } else {
+            set mem($role,qfp,$mem_type,$module,allocs) $allocs
+            set mem($role,qfp,$mem_type,$module,allocated) $allocated
+            set mem($role,qfp,$mem_type,$module,total) $total
+         }
+         incr mem($role,qfp,$mem_type,all,allocs) $allocs
+         incr mem($role,qfp,$mem_type,all,total) $total
+      }
+   }
+}
+
+proc print_sl_info {role} {
+   global mem proc_list
+   #Key System Load information
+   puts "Key system load info for [get_switch_str $role]:"
+   puts [format "%30s %10s" parameter value]
+   #Print number of aps and clients if wireless is enabled
+   if {[regexp {wncd} $proc_list]} {
+      puts [format "%30s %10s" "Number of APs" $mem($role,sl,num_aps)]
+      puts [format "%30s %10s" "Number of Clients" $mem($role,sl,num_clients)]
+   }
+}
+
+proc print_rss_info {role} {
+   global mem proc_list
+   #Overall CPU and Memory snapshot
+   print_border -
+   puts "Overall CPU info for [get_switch_str $role]:"
+   puts [format "%5s %5s %5s %5s %5s %5s %5s %5s" us% sy% ni% \
+         id% wa% hi% si% st%]
+   puts [format "%5s %5s %5s %5s %5s %5s %5s %5s" \
+         $mem($role,cpu,us) $mem($role,cpu,sy) $mem($role,cpu,ni) \
+         $mem($role,cpu,id) $mem($role,cpu,wa) $mem($role,cpu,hi) \
+         $mem($role,cpu,si) $mem($role,cpu,st)]
+   if {$role == "a"} {
+      puts "CPU Average info for [get_switch_str $role]:"
+      puts [format "%12s %5s %5s %5s" "process" "5sec" "1min" "5min"]
+      puts [format "%12s %5s %5s %5s" "Overall" $mem($role,cpu,5sec) \
+        $mem($role,cpu,1min) $mem($role,cpu,5min)]
+      foreach proc $proc_list {
+         puts [format "%12s %5s %5s %5s" $proc $mem($role,$proc,cpu,5sec) \
+            $mem($role,$proc,cpu,1min) $mem($role,$proc,cpu,5min)]
+      }
+   }
+   print_border -
+   puts "Overall Memory info (in KB) for [get_switch_str $role]:"
+   puts [format "%10s %10s %10s %10s %10s %10s" total \
+         used free buff_cache avail committed]
+   puts [format "%10s %10s %10s %10s %10s %10s" \
+         $mem($role,mem,total) $mem($role,mem,used) $mem($role,mem,free) \
+         $mem($role,mem,buff_cache) $mem($role,mem,avail) \
+         $mem($role,mem,committed)]
+   print_border -
+}
+
+proc print_ios_info {role} {
+   global mem
+   puts "IOS memory summary for [get_switch_str $role]:"
+   puts [format "%12s %12s %12s %12s %12s %12s" procmem allocpc chunk gd gdchunk buffer]
+   puts [format "%12s %12s %12s %12s %12s" "holding B" bytes bytes bytes bytes bytes]
+   puts [format "%12s %12s %12s %12s %12s %12s" $mem($role,ios,procmem,all) \
+         $mem($role,ios,allocpc,all) $mem($role,ios,chunk,all) \
+         $mem($role,ios,gd,all) $mem($role,ios,gdchunk,all) \
+         $mem($role,ios,buffer,all)]
+   print_border -
+}
+
+proc print_process_info {role} {
+   global mem proc_list
+   puts "Process info for [get_switch_str $role]:"
+   puts [format "%12s %4s %5s %4s %12s %12s %8s %8s %12s %12s %10s %8s" "process" \
+          "cpu" "virt" "rss" "bmalloc" "bmchunk" "tdlmsg" "tdldb" \
+          "alloc_comp" "alloc_data" "callsite" "smaps"]
+   puts [format "%12s %4s %5s %4s %12s %12s %8s %8s %12s %12s %10s %8s" "" "%" "MB" \
+          "MB" "allocs-frees" "allocs-frees" "entries" "entries" \
+          "allocs-frees" "allocs-frees" "diff_bytes" "KB"]
+   foreach proc $proc_list {
+      if {[regexp {qfp} $proc]} {
+          continue
+      }
+      puts [format "%12s %4s %5.f %4.f %12.f %12.f %8.f %8.f %12.f %12.f %10.f %8.f" \
+            "$proc" $mem($role,$proc,cpu) $mem($role,$proc,virt) \
+            $mem($role,$proc,rss) $mem($role,$proc,bmalloc,Summary,allocs_frees) \
+            $mem($role,$proc,bmchunk,all,allocs_frees) \
+            $mem($role,$proc,tdlmsg,all) $mem($role,$proc,tdldb,all) \
+            $mem($role,$proc,alloc_comp,Summary,allocs_frees) \
+            $mem($role,$proc,alloc_data,Summary,allocs_frees) \
+            $mem($role,$proc,mmalloc,all) $mem($role,$proc,smaps,all,rss)]
+   }
+   print_border =
+}
+
+proc print_qfp_mem_info {role} {
+   global mem
+   puts "QFP memory summary for [get_switch_str $role]:"
+   puts [format "%12s %12s %12s %12s %12s %12s" \
+      iram_used global_used local_used local_pvt_used unmap_global_used unmap_local_used]
+   puts [format "%12s %12s %12s %12s %12s %12s" $mem($role,qfp,iram,all,total) \
+            $mem($role,qfp,global,all,total) $mem($role,qfp,local,all,total) \
+            $mem($role,qfp,local_pvt,all,total) $mem($role,qfp,unmap_global,all,total) \
+            $mem($role,qfp,unmap_local,all,total)]
+   print_border =
+}
+
+proc memleak_snapshot {} {
+   global platform proc_list standby mem script_version image_version leak_types
+   foreach leak $leak_types {
+      global $leak
+   }
+
+   #Reset snapshot statistics
+   array unset mem
+   array set mem {}
+
+   #Grab the system clock
+   set mem(time) [get_clock_info]
+   set mem(script_version) $script_version
+   set mem(image_version) $image_version
+
+   #Initialize per process information
+   init_proc_info a
+
+   #Gather key system load parameters
+   get_sl_info a
+
+   #Gather RSS for each process from show plat soft process slot $rp_str command
+   if {$rss_leaks} {
+      get_rss_info a
+   }
+
+   #Gather 'show proc mem sort' info
+   if {[regexp {ios} $proc_list] && $ios_procmem_leaks} {
+      get_ios_procmem_info a
+   }
+
+   #Gather 'show mem allocating-process totals' info
+   if {[regexp {ios} $proc_list] && $ios_allocpc_leaks} {
+      get_ios_allocpc_info a
+   }
+
+   #Gather 'show chunk brief' info
+   if {[regexp {ios} $proc_list] && $ios_chunk_leaks} {
+      get_ios_chunk_info a
+   }
+
+   #Gather 'show mem debug leaks' info
+   if {[regexp {ios} $proc_list] && $ios_gd_leaks} {
+      get_ios_gd_info a
+   }
+
+   #Gather 'show mem debug leaks chunks' info
+   if {[regexp {ios} $proc_list] && $ios_gdchunk_leaks} {
+      get_ios_gdchunk_info a
+   }
+
+   #Gather 'show buffers leak' info
+   if {[regexp {ios} $proc_list] && $ios_buffer_leaks} {
+      get_ios_buffer_info a
+   }
+
+   #Gather bmalloc named memory totals, allocs and frees
+   #Use 'show plat soft mem <proc> ...' command
+   if {$bmalloc_leaks} {
+      get_bmalloc_info a
+   }
+
+   #Gather bmalloc named chunk memory totals, allocs and frees
+   #Use 'show plat soft mem chunk <proc> ...' command
+   if {$bmchunk_leaks} {
+      get_bmchunk_info a
+   }
+
+   #Gather tdl message statistics
+   #Use 'show plat soft mem messaging <proc> ...' command
+   if {$tdlmsg_leaks} {
+      get_tdlmsg_info a
+   }
+
+   #Gather tdl dabase statistics
+   #Use 'show plat soft mem database <proc> ...' command
+   if {$tdldb_leaks} {
+      get_tdldb_info a
+   }
+
+   #Gather maroon malloc accounting stats
+   #Use 'show plat soft mem <proc> sw <> r0 alloc callsite' command
+   if {$mmalloc_leaks} {
+      get_alloc_comp_info a
+      get_alloc_data_info a
+      get_callsite_info a
+   }
+
+   #Gather the smaps output and parse it
+   if {$smaps_leaks} {
+      get_smaps_info a
+   }
+
+   #Gather the QFP Memory info- only on platforms with qfp
+   if {$qfp_leaks && ($platform == "cat9800" || $platform == "asr1k" || \
+       $platform == "isr4k" || $platform == "isr1k") || $platform == "csr1k"} {
+      get_qfp_mem_info a
+   }
+
+   #Gather all the above info for standby if present
+   if {$standby} {
+
+      init_proc_info s
+
+      get_sl_info s
+
+      if {$rss_leaks} {
+         get_rss_info s
+      }
+
+      #Standby IOS info is not accessible from active IOS console,
+      #so disable it for now
+      if {$ios_procmem_leaks} {
+         #get_ios_procmem_info s
+      }
+      if {$ios_allocpc_leaks} {
+         #get_ios_allocpc_info s
+      }
+      if {$ios_chunk_leaks} {
+         #get_ios_chunk_info s
+      }
+      if {$ios_gd_leaks} {
+         #get_ios_gd_info s
+      }
+      if {$ios_gdchunk_leaks} {
+         #get_ios_gdchunk_info s
+      }
+      if {$ios_buffer_leaks} {
+         #get_ios_buffer_info s
+      }
+
+      if {$bmalloc_leaks} {
+         get_bmalloc_info s
+      }
+
+      if {$bmchunk_leaks} {
+         get_bmchunk_info s
+      }
+
+      if {$tdlmsg_leaks} {
+         get_tdlmsg_info s
+      }
+
+      if {$tdldb_leaks} {
+         get_tdldb_info s
+      }
+
+      if {$mmalloc_leaks} {
+         get_alloc_comp_info s
+         get_alloc_data_info s
+         get_callsite_info s
+      }
+
+      if {$qfp_leaks && ($platform == "cat9800" || $platform == "asr1k" || \
+          $platform == "isr4k" || $platform == "isr1k") || $platform == "csr1k"} {
+         get_qfp_mem_info s
+      }
+
+      if {$smaps_leaks} {
+         get_smaps_info s
+      }
+   }
+
+   #Now print the summary of snapshot
+   #Print the snapshot header
+   print_border =
+   puts [format "%-15s %s %s" "Script Version" : $script_version]
+   puts [format "%-15s %s %s" "Image Version" : $image_version]
+   puts [format "%-15s %s %s" "Time" : $mem(time)]
+   print_border =
+
+   #Print the key system load parameters
+   print_sl_info a
+
+   #Print the overall CPU and Memory info of the switch
+   if {$rss_leaks} {
+      print_rss_info a
+   }
+
+   #IOS only memory snapshot
+   if {[regexp {ios} $proc_list]} {
+      print_ios_info a
+   }
+
+   #Generic snapshot applicable to all processes
+   print_process_info a
+
+   #Print the QFP DRAM and IRAM info for qfp based platforms
+   if {$qfp_leaks && ($platform == "cat9800" || $platform == "asr1k" || \
+       $platform == "isr4k" || $platform == "isr1k") || $platform == "csr1k"} {
+      print_qfp_mem_info a
+   }
+
+   #Repeat all snapshots for the standby switch
+   if {$standby} {
+      puts ""
+      puts "Standby switch info:"
+      print_border =
+
+      print_sl_info s
+
+      if {$rss_leaks} {
+         print_rss_info s
+      }
+
+      #Standby IOS info is not available from Active IOS console
+      #print_ios_info s
+
+      print_process_info s
+
+      if {$qfp_leaks && ($platform == "cat9800" || $platform == "asr1k" || \
+          $platform == "isr4k" || $platform == "isr1k") || $platform == "csr1k"} {
+         print_qfp_mem_info s
+      }
+   }
+
+   return [array get mem]
+}
+
+proc memleak_baseline {} {
+   global mem_base
+   array unset mem_base
+   array set mem_base [memleak_snapshot]
+}
+
+proc check_threshold {val1 val2 threshold} {
+   #avoid divide by 0
+   if {$val1 == 0} { return 0 }
+   if {[expr {(($val2-$val1)*100.0/$val1) > $threshold}]} {
+      return 1
+   } else {
+      return 0
+   }
+}
+
+proc mycompare {arg1 arg2} {
+   if {[regexp {.* (-?\d+)} $arg1 -> n1] && [regexp {.* (-?\d+)} $arg2 -> n2]} {
+      #Convert args to floats to take care of > 32 bit numbers
+      if {![regexp e $n1]} {append n1 e0}
+      if {![regexp e $n2]} {append n2 e0}
+      return [format "%.f" [expr {$n2 - $n1}]]
+   }
+   return [string compare $arg1 $arg2]
+}
+
+proc print_sl_delta {role} {
+   global proc_list mem_base mem_latest
+   set role_str [get_switch_str $role]
+   puts ""
+   puts "Key system load info delta for $role_str"
+   print_border -
+   puts [format "%30s %10s %10s %10s" parameter base latest diff]
+   if {[regexp {wncd} $proc_list]} {
+      puts [format "%30s %10s %10s %10s" num_aps $mem_base($role,sl,num_aps) \
+            $mem_latest($role,sl,num_aps) \
+            [expr $mem_latest($role,sl,num_aps) - $mem_base($role,sl,num_aps)]]
+      puts [format "%30s %10s %10s %10s" num_clients \
+            $mem_base($role,sl,num_clients) $mem_latest($role,sl,num_clients) \
+            [expr $mem_latest($role,sl,num_clients) - $mem_base($role,sl,num_clients)]]
+   }
+}
+
+proc print_rss_leaks {role} {
+   global proc_list mem_base mem_latest leak_threshold
+   set leak_proc_list ""
+   set role_str [get_switch_str $role]
+   if {[check_threshold $mem_latest($role,mem,avail) \
+      $mem_base($role,mem,avail) $leak_threshold] || \
+      [check_threshold $mem_base($role,mem,committed) \
+        $mem_latest($role,mem,committed) $leak_threshold]} {
+      puts ""
+      print_border -
+      puts "!!! Possible LEAK in overall system memory on switch $role !!!"
+      print_border -
+      puts [format "%15s %15s %15s %15s" memory base latest diff(KB)]
+      puts [format "%15s %15s %15s %15s" used \
+            $mem_base($role,mem,used) $mem_latest($role,mem,used) \
+            [expr {$mem_latest($role,mem,used) - $mem_base($role,mem,used)}]]
+      puts [format "%15s %15s %15s %15s" free \
+            $mem_base($role,mem,free) $mem_latest($role,mem,free) \
+            [expr {$mem_base($role,mem,free) - $mem_latest($role,mem,free)}]]
+      puts [format "%15s %15s %15s %15s" buff_cache \
+            $mem_base($role,mem,buff_cache) $mem_latest($role,mem,buff_cache) \
+            [expr {$mem_latest($role,mem,buff_cache) - $mem_base($role,mem,buff_cache)}]]
+      puts [format "%15s %15s %15s %15s" avail \
+            $mem_base($role,mem,avail) $mem_latest($role,mem,avail) \
+            [expr {$mem_base($role,mem,avail) - $mem_latest($role,mem,avail)}]]
+      puts [format "%15s %15s %15s %15s" committed \
+            $mem_base($role,mem,committed) $mem_latest($role,mem,committed) \
+            [expr {$mem_latest($role,mem,committed) - $mem_base($role,mem,committed)}]]
+      print_border -
+   }
+   foreach proc $proc_list {
+      if {[regexp {qfp} $proc]} {
+          continue
+      }
+      if {[check_threshold $mem_base($role,$proc,rss) \
+           $mem_latest($role,$proc,rss) $leak_threshold] || \
+          [check_threshold $mem_base($role,$proc,virt) \
+           $mem_latest($role,$proc,virt) $leak_threshold]} {
+         lappend leak_proc_list $proc
+      }
+   }
+   if {[llength $leak_proc_list]} {
+       puts ""
+       print_border -
+       puts "!!! Possible MEMORY LEAKS in the following processes on $role_str !!!"
+       print_border -
+       puts [format "%15s %10s %10s %10s %10s %10s %10s" proc base_virt \
+             latest_virt diff(MB) base_rss latest_rss diff(MB)]
+   }
+   set list ""
+   foreach proc $leak_proc_list {
+       lappend list [format "%15s %10s %10s %10.3f %10s %10s %10.3f" "$role $proc" \
+             $mem_base($role,$proc,virt) $mem_latest($role,$proc,virt) \
+             [expr {$mem_latest($role,$proc,virt) - $mem_base($role,$proc,virt)}] \
+             $mem_base($role,$proc,rss) $mem_latest($role,$proc,rss) \
+             [expr {$mem_latest($role,$proc,rss) - $mem_base($role,$proc,rss)}]]
+   }
+   set list [lsort -command mycompare $list]
+   foreach entry $list {puts $entry}
+   if {[llength $leak_proc_list]} {puts ""}
+
+   return $leak_proc_list
+}
+
+proc print_ios_procmem_leaks {role} {
+   global mem_base mem_latest top_leaks
+   set role_str [get_switch_str $role]
+   puts ""
+   puts "IOS proc mem leaks for $role_str"
+   print_border -
+   puts [format "%25s %15s %15s %15s" process base_holding \
+          latest_holding diff_bytes]
+   if {$mem_latest($role,ios,procmem,all) != $mem_base($role,ios,procmem,all)} {
+      set list ""
+      set names [union [array names mem_base $role,ios,procmem,*,pid] \
+                    [array names mem_latest $role,ios,procmem,*,pid]]
+      foreach name $names {
+         regsub -- {,pid} $name {} name
+         if {[info exists mem_base($name,pid)] && \
+             [info exists mem_latest($name,pid)] && \
+             $mem_latest($name,holding) != $mem_base($name,holding)} {
+            set leak_bytes [expr {$mem_latest($name,holding) - \
+                                  $mem_base($name,holding)}]
+            lappend list [format "%25s %15.f %15.f %15.f" \
+                          $mem_latest($name,proc) $mem_base($name,holding) \
+                          $mem_latest($name,holding) $leak_bytes]
+         } elseif {![info exists mem_base($name,pid)]} {
+            set leak_bytes $mem_latest($name,holding)
+            lappend list [format "%25s %15.f %15.f %15.f" \
+                          $mem_latest($name,proc) 0 \
+                          $mem_latest($name,holding) $leak_bytes]
+         } elseif {![info exists mem_latest($name,pid)]} {
+            set leak_bytes "-$mem_base($name,holding)"
+            lappend list [format "%25s %15.f %15.f %15.f" \
+                          $mem_base($name,proc) \
+                          $mem_base($name,holding) 0 $leak_bytes]
+         }
+      }
+      set list [lsort -command mycompare $list]
+      if {[llength $list] > $top_leaks} {
+         set list [lrange $list 0 [expr $top_leaks-1]]
+      }
+      foreach entry $list {puts $entry}
+      if {[llength $list]} {puts ""}
+   }
+}
+
+proc print_ios_allocpc_leaks {role} {
+   global mem_base mem_latest top_leaks
+   set role_str [get_switch_str $role]
+   puts ""
+   puts "IOS alloc_pc leaks for $role_str"
+   print_border -
+   puts "Tracekey : $mem_latest($role,ios,tracekey)"
+   puts [format "%40s %25s %10s %12s %10s" alloc_pc name base_total \
+         latest_total diff_bytes]
+   if {$mem_latest($role,ios,allocpc,all) != $mem_base($role,ios,allocpc,all)} {
+      set list ""
+      set tracekey $mem_latest($role,ios,tracekey)
+      set names [union [array names mem_base $role,ios,allocpc,*,pc] \
+                    [array names mem_latest $role,ios,allocpc,*,pc]]
+      foreach name $names {
+         regsub -- {,pc} $name {} name
+         if {[info exists mem_base($name,pc)] && \
+             [info exists mem_latest($name,pc)] && \
+             $mem_latest($name,total) != $mem_base($name,total)} {
+            set leak_bytes [expr {$mem_latest($name,total) - \
+                                  $mem_base($name,total)}]
+            lappend list [format "%40s %25s %10d %12d %10d" \
+                           $mem_latest($name,pc) \
+                           $mem_base($name,name)  $mem_base($name,total) \
+                           $mem_latest($name,total) $leak_bytes]
+         } elseif {![info exists mem_base($name,pc)]} {
+            set leak_bytes $mem_latest($name,total)
+            lappend list [format "%40s %25s %10d %12d %10d" \
+                           $mem_latest($name,pc) \
+                           $mem_latest($name,name) 0  \
+                           $mem_latest($name,total) $leak_bytes]
+         } elseif {![info exists mem_latest($name,pc)]} {
+            set leak_bytes "-$mem_base($name,total)"
+            lappend list [format "%40s %25s %10d %12d %10d" \
+                           $mem_base($name,pc) \
+                           $mem_base($name,name) \
+                           $mem_base($name,total) 0 $leak_bytes]
+         }
+      }
+      set list [lsort -command mycompare $list]
+      if {[llength $list] > $top_leaks} {
+         set list [lrange $list 0 [expr $top_leaks-1]]
+      }
+      foreach entry $list {puts $entry}
+      if {[llength $list]} {puts ""}
+   }
+}
+
+proc print_ios_chunk_leaks {role} {
+   global mem_base mem_latest top_leaks
+   set role_str [get_switch_str $role]
+   puts ""
+   puts "IOS chunk leaks for $role_str"
+   print_border -
+   puts [format "%25s %10s %10s %10s %10s %10s" {} Latest Latest {} {} {} {}]
+   puts [format "%25s %10s %10s %10s %10s %10s" name Siblings Elements base_mem \
+         latest_mem diff_bytes]
+   if {$mem_latest($role,ios,chunk,all) != $mem_base($role,ios,chunk,all)} {
+      set list ""
+      set names [union [array names mem_base $role,ios,chunk,*,name] \
+                    [array names mem_latest $role,ios,chunk,*,name]]
+      foreach name $names {
+         regsub -- {,name} $name {} name
+         if {[info exists mem_base($name,name)] && \
+             [info exists mem_latest($name,name)] && \
+             $mem_latest($name,mem_used) != $mem_base($name,mem_used)} {
+            set leak_bytes [expr {$mem_latest($name,mem_used) - \
+                                  $mem_base($name,mem_used)}]
+            lappend list [format "%25s %10s %10s %10s %10s %10s" \
+                           $mem_latest($name,name) $mem_latest($name,siblings) \
+                           $mem_latest($name,elements) $mem_base($name,mem_used) \
+                           $mem_latest($name,mem_used) $leak_bytes]
+         } elseif {![info exists mem_base($name,name)]} {
+            set leak_bytes $mem_latest($name,mem_used)
+            lappend list [format "%25s %10s %10s %10s %10s %10s" \
+                           $mem_latest($name,name) $mem_latest($name,siblings) \
+                           $mem_latest($name,elements) 0  \
+                           $mem_latest($name,mem_used) $leak_bytes]
+         } elseif {![info exists mem_latest($name,name)]} {
+            set leak_bytes "-$mem_base($name,mem_used)"
+            lappend list [format "%25s %10s %10s %10s %10s %10s" \
+                           $mem_base($name,name) 0 0 \
+                           $mem_base($name,mem_used) 0 $leak_bytes]
+         }
+      }
+      set list [lsort -command mycompare $list]
+      if {[llength $list] > $top_leaks} {
+         set list [lrange $list 0 [expr $top_leaks-1]]
+      }
+      foreach entry $list {puts $entry}
+      if {[llength $list]} {puts ""}
+   }
+}
+
+proc print_ios_gd_leaks {role} {
+   global mem_base mem_latest top_leaks debug
+   set role_str [get_switch_str $role]
+   puts ""
+   puts "IOS GD leaks for $role_str"
+   print_border -
+   puts [format "%-25s %-15s %-10s %-20s %-10s" alloc_pc address alloc_proc name diff_size]
+   if ($debug) {puts "gd bytes: Latest $mem_latest($role,ios,gd,all) Base $mem_base($role,ios,gd,all)"}
+   if {$mem_latest($role,ios,gd,all) != $mem_base($role,ios,gd,all)} {
+      set list ""
+      set names [union [array names mem_base $role,ios,gd,*,size] \
+                    [array names mem_latest $role,ios,gd,*,size]]
+      foreach name $names {
+         regsub -- {,size} $name {} name
+         if {[info exists mem_base($name,pc)] && \
+             [info exists mem_latest($name,pc)] && \
+             $mem_latest($name,size) != $mem_base($name,size)} {
+            set leak_bytes [expr {$mem_latest($name,size) - \
+                                  $mem_base($name,size)}]
+            lappend list [format "%-25s %-15s %-5s %-25s %-10d" $mem_latest($name,pc) \
+                          $mem_latest($name,addr) $mem_latest($name,proc) \
+                          $mem_latest($name,name) $leak_bytes]
+         } elseif {![info exists mem_base($name,pc)]} {
+            set leak_bytes $mem_latest($name,size)
+            lappend list [format "%-25s %-15s %-5s %-25s %-10d" $mem_latest($name,pc) \
+                          $mem_latest($name,addr) $mem_latest($name,proc) \
+                          $mem_latest($name,name) $leak_bytes]
+         } elseif {![info exists mem_latest($name,pc)]} {
+            set leak_bytes "-$mem_base($name,size)"
+            lappend list [format "%-25s %-15s %-5s %-25s %-10d" $mem_base($name,pc) \
+                          $mem_base($name,addr) $mem_base($name,proc) \
+                          $mem_base($name,name) $leak_bytes]
+         }
+      }
+      set list [lsort -command mycompare $list]
+      if {[llength $list] > $top_leaks} {
+         set list [lrange $list 0 [expr $top_leaks-1]]
+      }
+      foreach entry $list {puts $entry}
+      if {[llength $list]} {puts ""}
+   }
+}
+
+proc print_ios_gdchunk_leaks {role} {
+   global mem_base mem_latest top_leaks
+   set role_str [get_switch_str $role]
+   puts ""
+   puts "IOS GD chunk leaks for $role_str"
+   print_border -
+   puts [format "%-25s %-15s %-5s %-5s %-20s %-10s" \
+         alloc_pc address parent proc name diff_size]
+   if {$mem_latest($role,ios,gdchunk,all) != $mem_base($role,ios,gdchunk,all)} {
+      set list ""
+      set names [union [array names mem_base $role,ios,gdchunk,*,size] \
+                    [array names mem_latest $role,ios,gdchunk,*,size]]
+      foreach name $names {
+         regsub -- {,size} $name {} name
+         if {[info exists mem_base($name,pc)] && \
+             [info exists mem_latest($name,pc)] && \
+             $mem_latest($name,size) != $mem_base($name,size)} {
+            set leak_bytes [expr {$mem_latest($name,size) - \
+                                  $mem_base($name,size)}]
+            lappend list [format "%-25s %-15s %-5s %-5s %-20s %-10d" $mem_latest($name,pc) \
+                          $mem_latest($name,addr) $mem_latest($name,parent) \
+                          $mem_latest($name,proc) $mem_latest($name,name) $leak_bytes]
+         } elseif {![info exists mem_base($name,pc)]} {
+            set leak_bytes $mem_latest($name,size)
+            lappend list [format "%-25s %-15s %-5s %-5s %-20s %-10d" $mem_latest($name,pc) \
+                          $mem_latest($name,addr) $mem_latest($name,parent) \
+                          $mem_latest($name,proc) $mem_latest($name,name) $leak_bytes]
+         } elseif {![info exists mem_latest($name,pc)]} {
+            set leak_bytes "-$mem_base($name,size)"
+            lappend list [format "%-25s %-15s %-5s %-5s %-20s %-10d" $mem_latest($name,pc) \
+                          $mem_base($name,addr) $mem_base($name,parent) \
+                          $mem_base($name,proc) $mem_base($name,name) $leak_bytes]
+         }
+      }
+      set list [lsort -command mycompare $list]
+      if {[llength $list] > $top_leaks} {
+         set list [lrange $list 0 [expr $top_leaks-1]]
+      }
+      foreach entry $list {puts $entry}
+      if {[llength $list]} {puts ""}
+   }
+}
+
+proc print_ios_buffer_leaks {role} {
+   global mem_base mem_latest top_leaks
+   set role_str [get_switch_str $role]
+   puts ""
+   puts "IOS buffer leaks for $role_str"
+   print_border -
+   puts [format "%15s %15s %8s %15s %5s" Header DataArea Pool User Size]
+   if {$mem_latest($role,ios,buffer,all) != $mem_base($role,ios,buffer,all)} {
+      set list ""
+      set names [union [array names mem_base $role,ios,buffer,*,size] \
+                    [array names mem_latest $role,ios,buffer,*,size]]
+      foreach name $names {
+         regsub -- {,size} $name {} name
+         if {[info exists mem_base($name,hdr)] && \
+             [info exists mem_latest($name,hdr)] && \
+             $mem_latest($name,size) != $mem_base($name,size)} {
+            set leak_bytes [expr {$mem_latest($name,size) - \
+                                  $mem_base($name,size)}]
+            lappend list [format "%15s %15s %8s %15s %5d" $mem_latest($name,hdr) \
+                          $mem_latest($name,data) $mem_latest($name,pool) \
+                          $mem_latest($name,user) $leak_bytes]
+         } elseif {![info exists mem_base($name,hdr)]} {
+            set leak_bytes $mem_latest($name,size)
+            lappend list [format "%15s %15s %8s %15s %5d" $mem_latest($name,hdr) \
+                          $mem_latest($name,data) $mem_latest($name,pool) \
+                          $mem_latest($name,user) $leak_bytes]
+         } elseif {![info exists mem_latest($name,hdr)]} {
+            set leak_bytes "-$mem_base($name,size)"
+            lappend list [format "%15s %15s %8s %15s %5d" $mem_base($name,hdr) \
+                          $mem_base($name,data) $mem_base($name,pool) \
+                          $mem_base($name,user) $leak_bytes]
+         }
+      }
+      set list [lsort -command mycompare $list]
+      if {[llength $list] > $top_leaks} {
+         set list [lrange $list 0 [expr $top_leaks-1]]
+      }
+      foreach entry $list {puts $entry}
+      if {[llength $list]} {puts ""}
+   }
+}
+
+proc print_bmalloc_leaks {role} {
+   global proc_list mem_base mem_latest top_leaks
+   set role_str [get_switch_str $role]
+   puts ""
+   puts "bmalloc leaks per process for $role_str"
+   print_border -
+   puts [format "%40s %12s %12s %10s" module base latest diff_bytes]
+   puts [format "%40s %12s %12s %10s" "" allocs-frees allocs-frees ""]
+   #foreach proc $act_leak_proc_list ; we are checking on all procs instead
+   foreach proc $proc_list {
+      if {$mem_latest($role,$proc,bmalloc,Summary,allocs_frees) != \
+          $mem_base($role,$proc,bmalloc,Summary,allocs_frees)} {
+         set list ""
+         set names [union \
+                    [array names mem_base $role,$proc,bmalloc,*,allocs_frees] \
+                    [array names mem_latest $role,$proc,bmalloc,*,allocs_frees]]
+         foreach name $names {
+               regsub -- {,[^,]*$} $name {,allocated} allocated_str
+               regsub -- {,allocs_frees} $name {} module
+               regsub -- {.*,} $module {} module
+            if {[info exists mem_base($name)] && \
+                [info exists mem_latest($name)] && \
+                $mem_latest($name) != $mem_base($name)} {
+               set leak_bytes [expr {$mem_latest($allocated_str) - \
+                                     $mem_base($allocated_str)}]
+               lappend list [format "%40s %12.f %12.f %10.f" $module \
+                             $mem_base($name) $mem_latest($name) $leak_bytes]
+            } elseif {![info exists mem_base($name)]} {
+               set leak_bytes $mem_latest($allocated_str)
+               lappend list [format "%40s %12.f %12.f %10.f" $module \
+                             0 $mem_latest($name) $leak_bytes]
+            } elseif {![info exists mem_latest($name)]} {
+               set leak_bytes "-$mem_base($allocated_str)"
+               lappend list [format "%40s %12.f %12.f %10.f" $module \
+                             $mem_base($name) 0 $leak_bytes]
+            }
+         }
+         puts "$role,$proc,bmalloc"
+         set list [lsort -command mycompare $list]
+         if {[llength $list] > $top_leaks} {
+            set list [lrange $list 0 [expr $top_leaks-1]]
+         }
+         #puts [join $list]
+         foreach entry $list {puts $entry}
+         #add a new line after each process (if there were leaks in that proc)
+         if {[llength $list]} {puts ""}
+      }
+   }
+}
+
+proc print_bmchunk_leaks {role} {
+   global proc_list mem_base mem_latest top_leaks
+   set role_str [get_switch_str $role]
+   puts ""
+   puts "bmalloc chunk leaks per process for $role_str"
+   print_border -
+   puts [format "%40s %12s %12s %10s" module base latest diff]
+   puts [format "%40s %12s %12s %10s" "" allocs-frees allocs-frees ""]
+   #foreach proc $act_leak_proc_list ; we are checking on all procs instead
+   foreach proc $proc_list {
+      if {$mem_latest($role,$proc,bmchunk,all,allocs_frees) != \
+          $mem_base($role,$proc,bmchunk,all,allocs_frees)} {
+         set list ""
+         set names [union \
+                    [array names mem_base $role,$proc,bmchunk,*,allocs_frees] \
+                    [array names mem_latest $role,$proc,bmchunk,*,allocs_frees]]
+         foreach name $names {
+            regsub -- {,allocs_frees} $name {} module
+            regsub -- {.*,} $module {} module
+            if {[info exists mem_base($name)] && \
+                [info exists mem_latest($name)] && \
+                $mem_latest($name) != $mem_base($name)} {
+               lappend list [format "%40s %12.f %12.f %10.f" $module \
+                             $mem_base($name) $mem_latest($name) \
+                             [expr {$mem_latest($name)-$mem_base($name)}]]
+            } elseif {![info exists mem_base($name)]} {
+               lappend list [format "%40s %12.f %12.f %10.f" $module \
+                             0 $mem_latest($name) $mem_latest($name)]
+            } elseif {![info exists mem_latest($name)]} {
+               lappend list [format "%40s %12.f %12.f %10.f" $module \
+                             $mem_base($name) 0 "-$mem_base($name)"]
+            }
+         }
+         puts "$role,$proc,bmchunk"
+         set list [lsort -command mycompare $list]
+         if {[llength $list] > $top_leaks} {
+            set list [lrange $list 0 [expr $top_leaks-1]]
+         }
+         foreach entry $list {puts $entry}
+         #add a new line after each process (if there were leaks in that proc)
+         if {[llength $list]} {puts ""}
+      }
+   }
+}
+
+proc print_tdlmsg_leaks {role} {
+   global proc_list mem_base mem_latest top_leaks
+   set role_str [get_switch_str $role]
+   puts ""
+   puts "TDL messaging leaks per process for $role_str"
+   print_border -
+   puts [format "%40s %10s %10s %10s" object_type base# latest# diff]
+   foreach proc $proc_list {
+      if {$mem_latest($role,$proc,tdlmsg,all) != $mem_base($role,$proc,tdlmsg,all)} {
+         set list ""
+         set names [union [array names mem_base $role,$proc,tdlmsg,*] \
+                    [array names mem_latest $role,$proc,tdlmsg,*]]
+         foreach name $names {
+            regsub -- {.*,} $name {} str
+            if {[info exists mem_base($name)] && \
+                [info exists mem_latest($name)] && \
+                $mem_latest($name) != $mem_base($name)} {
+               lappend list [format "%40s %10.f %10.f %10.f" $str $mem_base($name) \
+                             $mem_latest($name) \
+                             [expr {$mem_latest($name)-$mem_base($name)}]]
+            } elseif {![info exists mem_base($name)] && $mem_latest($name)} {
+               lappend list [format "%40s %10.f %10.f %10.f" $str 0 \
+                            $mem_latest($name) $mem_latest($name)]
+            } elseif {![info exists mem_latest($name)] && $mem_base($name)} {
+               lappend list [format "%40s %10.f %10.f %10.f" $str \
+                            $mem_base($name) 0 "-$mem_base($name)"]
+            }
+         }
+         puts "$role,$proc,tdlmsg"
+         set list [lsort -command mycompare $list]
+         if {[llength $list] > $top_leaks} {
+            set list [lrange $list 0 [expr $top_leaks-1]]
+         }
+         foreach entry $list {puts $entry}
+         if {[llength $list]} {puts ""}
+      }
+   }
+}
+
+proc print_tdldb_leaks {role} {
+   global proc_list mem_base mem_latest top_leaks
+   set role_str [get_switch_str $role]
+   puts ""
+   puts "TDL DB leaks per process for $role_str"
+   print_border -
+   puts [format "%40s %10s %10s %10s" object_type base# latest# diff]
+   foreach proc $proc_list {
+      if {$mem_latest($role,$proc,tdldb,all) != $mem_base($role,$proc,tdldb,all)} {
+         set list ""
+         set names [union [array names mem_base $role,$proc,tdldb,*] \
+                    [array names mem_latest $role,$proc,tdldb,*]]
+         foreach name $names {
+            regsub -- {.*,} $name {} str
+            if {[info exists mem_base($name)] && \
+                [info exists mem_latest($name)] && \
+                $mem_latest($name) != $mem_base($name)} {
+               lappend list [format "%40s %10.f %10.f %10.f" $str $mem_base($name) \
+                             $mem_latest($name) \
+                             [expr {$mem_latest($name)-$mem_base($name)}]]
+            } elseif {![info exists mem_base($name)]} {
+               lappend list [format "%40s %10.f %10.f %10.f" $str 0 \
+                             $mem_latest($name) $mem_latest($name)]
+            } elseif {![info exists mem_latest($name)]} {
+               lappend list [format "%40s %10.f %10.f %10.f" $str \
+                             $mem_base($name) 0 "-$mem_base($name)"]
+            }
+         }
+         puts "$role,$proc,tdldb"
+         set list [lsort -command mycompare $list]
+         if {[llength $list] > $top_leaks} {
+            set list [lrange $list 0 [expr $top_leaks-1]]
+         }
+         foreach entry $list {puts $entry}
+         if {[llength $list]} {puts ""}
+      }
+   }
+}
+
+proc print_alloc_comp_leaks {role} {
+   global proc_list mem_base mem_latest top_leaks
+   set role_str [get_switch_str $role]
+   puts ""
+   puts "Alloc Comp leaks per process for $role_str"
+   print_border -
+   puts [format "%40s %12s %12s %10s" module base latest diff_bytes]
+   puts [format "%40s %12s %12s %10s" "" allocs-frees allocs-frees ""]
+   #foreach proc $act_leak_proc_list ; we are checking on all procs instead
+   foreach proc $proc_list {
+      if {$mem_latest($role,$proc,alloc_comp,Summary,allocs_frees) != \
+          $mem_base($role,$proc,alloc_comp,Summary,allocs_frees)} {
+         set list ""
+         set names [union \
+                [array names mem_base $role,$proc,alloc_comp,*,allocs_frees] \
+                [array names mem_latest $role,$proc,alloc_comp,*,allocs_frees]]
+         foreach name $names {
+               regsub -- {,[^,]*$} $name {,allocated} allocated_str
+               regsub -- {,allocs_frees} $name {} module
+               regsub -- {.*,} $module {} module
+            if {[info exists mem_base($name)] && \
+                $mem_latest($name) != $mem_base($name)} {
+               set leak_bytes [expr {$mem_latest($allocated_str) - \
+                                     $mem_base($allocated_str)}]
+               lappend list [format "%40s %12.f %12.f %10.f" $module \
+                             $mem_base($name) $mem_latest($name) $leak_bytes]
+            } elseif {![info exists mem_base($name)]} {
+               set leak_bytes $mem_latest($allocated_str)
+               lappend list [format "%40s %12.f %12.f %10.f" $module \
+                             0 $mem_latest($name) $leak_bytes]
+            } elseif {![info exists mem_latest($name)]} {
+               set leak_bytes "-$mem_base($allocated_str)"
+               lappend list [format "%40s %12.f %12.f %10.f" $module \
+                             $mem_base($name) 0 $leak_bytes]
+            }
+         }
+         puts "$role,$proc,alloc_comp"
+         set list [lsort -command mycompare $list]
+         if {[llength $list] > $top_leaks} {
+            set list [lrange $list 0 [expr $top_leaks-1]]
+         }
+         foreach entry $list {puts $entry}
+         #add a new line after each process (if there were leaks in that proc)
+         if {[llength $list]} {puts ""}
+      }
+   }
+}
+
+proc print_alloc_data_leaks {role} {
+   global proc_list mem_base mem_latest top_leaks
+   set role_str [get_switch_str $role]
+   puts ""
+   puts "Alloc data leaks per process for $role_str"
+   print_border -
+   puts [format "%40s %12s %12s %10s" module base latest diff_bytes]
+   puts [format "%40s %12s %12s %10s" "" allocs-frees allocs-frees ""]
+   #foreach proc $act_leak_proc_list ; we are checking on all procs instead
+   foreach proc $proc_list {
+      if {$mem_latest($role,$proc,alloc_data,Summary,allocs_frees) != \
+          $mem_base($role,$proc,alloc_data,Summary,allocs_frees)} {
+         set list ""
+         set names [union \
+             [array names mem_base $role,$proc,alloc_data,*,allocs_frees] \
+             [array names mem_latest $role,$proc,alloc_data,*,allocs_frees]]
+         foreach name $names {
+               regsub -- {,[^,]*$} $name {,allocated} allocated_str
+               regsub -- {,allocs_frees} $name {} module
+               regsub -- {.*,} $module {} module
+            if {[info exists mem_base($name)] && \
+                [info exists mem_latest($name)] && \
+                $mem_latest($name) != $mem_base($name)} {
+               set leak_bytes [expr {$mem_latest($allocated_str) - \
+                                     $mem_base($allocated_str)}]
+               lappend list [format "%40s %12.f %12.f %10.f" $module \
+                             $mem_base($name) $mem_latest($name) $leak_bytes]
+            } elseif {![info exists mem_base($name)]} {
+               set leak_bytes $mem_latest($allocated_str)
+               lappend list [format "%40s %12.f %12.f %10.f" $module \
+                             0 $mem_latest($name) $leak_bytes]
+            } elseif {![info exists mem_latest($name)]} {
+               set leak_bytes "-$mem_base($allocated_str)"
+               lappend list [format "%40s %12.f %12.f %10.f" $module \
+                             $mem_base($name) 0 $leak_bytes]
+            }
+         }
+         puts "$role,$proc,alloc_data"
+         set list [lsort -command mycompare $list]
+         if {[llength $list] > $top_leaks} {
+            set list [lrange $list 0 [expr $top_leaks-1]]
+         }
+         foreach entry $list {puts $entry}
+         #add a new line after each process (if there were leaks in that proc)
+         if {[llength $list]} {puts ""}
+      }
+   }
+}
+
+proc print_callsite_leaks {role} {
+   global proc_list mem_base mem_latest top_leaks backtrace_depth
+   set role_str [get_switch_str $role]
+   puts ""
+   puts "malloc callsite leaks per process for $role_str"
+   print_border -
+   puts [format "%12s %6s %10s %10s %12s %12s %12s" callsite thread base_call \
+                latest_call base_bytes latest_bytes diff_bytes]
+   #foreach proc $act_leak_proc_list ; we are checking on all procs instead
+   foreach proc $proc_list {
+      if {$mem_latest($role,$proc,mmalloc,all) != \
+          $mem_base($role,$proc,mmalloc,all)} {
+         set list ""
+         set names [union [array names mem_base $role,$proc,mmalloc,*,callsite] \
+                    [array names mem_latest $role,$proc,mmalloc,*,callsite]]
+         foreach name $names {
+            regsub -- {,callsite} $name {} name
+            regsub -- {.*,} $name {} callsite
+            if {[info exists mem_base($name,callsite)] && \
+                [info exists mem_latest($name,callsite)] && \
+                $mem_latest($name,diff_bytes) != $mem_base($name,diff_bytes)} {
+               set leak_bytes [expr {$mem_latest($name,diff_bytes) - \
+                                     $mem_base($name,diff_bytes)}]
+               lappend list [format "%12s %6d %12.f %12.f %12.f %12.f %12.f" $callsite \
+                             $mem_base($name,thread) \
+                             $mem_base($name,diff_calls) \
+                             $mem_latest($name,diff_calls) \
+                             $mem_base($name,diff_bytes) \
+                             $mem_latest($name,diff_bytes) $leak_bytes]
+            } elseif {![info exists mem_base($name,callsite)]} {
+               set leak_bytes $mem_latest($name,diff_bytes)
+               lappend list [format "%12s %6d %12.f %12.f %12.f %12.f %12.f" $callsite \
+                             $mem_latest($name,thread) \
+                             0 $mem_latest($name,diff_calls) \
+                             0 $mem_latest($name,diff_bytes) $leak_bytes]
+            } elseif {![info exists mem_latest($name,callsite)]} {
+               set leak_bytes "-$mem_base($name,diff_bytes)"
+               lappend list [format "%12s %6d %12.f %12.f %12.f %12.f %12.f" $callsite \
+                             $mem_base($name,thread) \
+                             $mem_base($name,diff_calls) 0 \
+                             $mem_base($name,diff_bytes) 0 $leak_bytes]
+            }
+         }
+         puts "$role,$proc,callsite"
+         puts "Tracekey : $mem_latest($role,$proc,tracekey)"
+         set list [lsort -command mycompare $list]
+         set callsite_list ""
+         if {[llength $list] > $top_leaks} {
+            set list [lrange $list 0 [expr $top_leaks-1]]
+         }
+         foreach entry $list {puts $entry}
+         #if backtrace enabled, start the backtrace on top call sites
+         #currently only the first callsite works, but tihs is ready for more
+         if {$backtrace_depth} {
+            foreach entry $list {
+               regexp {(\d+) } $entry match callsite
+               append callsite_list "$callsite "
+            }
+            callsite_backtrace_action $role $proc "start" $callsite_list
+            show_callsite_backtrace $role $proc
+         }
+         #add a new line after each process (if there were leaks in that proc)
+         if {[llength $list]} {puts ""}
+      }
+   }
+}
+
+proc print_smaps_leaks {role} {
+   global proc_list mem_base mem_latest top_leaks
+   set role_str [get_switch_str $role]
+   puts ""
+   puts "smaps leaks per process for $role_str"
+   print_border -
+   puts [format "%25s %40s %10s %10s %10s" addr path base_bytes \
+            latest_b diff_b(KB)]
+   foreach proc $proc_list {
+      if {$mem_latest($role,$proc,smaps,all,rss) != \
+          $mem_base($role,$proc,smaps,all,rss)} {
+         set list ""
+         set names [union [array names mem_base $role,$proc,smaps,*,addr] \
+                    [array names mem_latest $role,$proc,smaps,*,addr]]
+         foreach name $names {
+            regsub -- {,addr} $name {} name
+            regsub -- {.*,} $name {} addr
+            if {[info exists mem_base($name,addr)] && \
+                [info exists mem_latest($name,addr)] && \
+                $mem_latest($name,rss) != $mem_base($name,rss)} {
+               set leak_bytes [expr {$mem_latest($name,rss) - \
+                                     $mem_base($name,rss)}]
+               lappend list [format "%25s %40s %10d %10d %10d" $addr \
+                             $mem_base($name,path) \
+                             $mem_base($name,rss) \
+                             $mem_latest($name,rss) \
+                             $leak_bytes]
+            } elseif {![info exists mem_base($name,addr)]} {
+               set leak_bytes $mem_latest($name,rss)
+               lappend list [format "%25s %40s %10d %10d %10d" $addr \
+                             $mem_latest($name,path) \
+                             0 $mem_latest($name,rss) $leak_bytes]
+            } elseif {![info exists mem_latest($name,addr)]} {
+               set leak_bytes "-$mem_base($name,rss)"
+               lappend list [format "%25s %40s %10d %10d %10d" $addr \
+                             $mem_base($name,path) \
+                             $mem_base($name,rss) 0 $leak_bytes]
+            }
+         }
+         puts "$role,$proc,smaps"
+         set list [lsort -command mycompare $list]
+         if {[llength $list] > $top_leaks} {
+            set list [lrange $list 0 [expr $top_leaks-1]]
+         }
+         foreach entry $list {puts $entry}
+         #add a new line after each process (if there were leaks in that proc)
+         if {[llength $list]} {puts ""}
+      }
+   }
+}
+
+proc print_qfp_mem_leaks {role} {
+   global mem_base mem_latest top_leaks
+   set role_str [get_switch_str $role]
+   puts ""
+   puts "QFP memory leaks for $role_str"
+   print_border -
+   puts [format "%30s %10s %10s %12s %12s %8s" module b_allocs \
+            l_allocs base_bytes latest_bytes diff(bytes)]
+   foreach mem_type {iram global local local_pvt unmap_local unmap_global} {
+      if {$mem_base($role,qfp,$mem_type,all,total) != $mem_latest($role,qfp,$mem_type,all,total)} {
+         set list ""
+         set names [union [array names mem_base $role,qfp,$mem_type,*,total] \
+                        [array names mem_latest $role,qfp,$mem_type,*,total]]
+         foreach name $names {
+            regsub -- {,total} $name {} module
+            regsub -- {.*,} $module {} module
+            regsub -- {,total} $name {,allocs} allocs
+            if {[info exists mem_base($name)] && \
+                [info exists mem_latest($name)] && \
+                $mem_latest($name) != $mem_base($name)} {
+               set leak_bytes [expr {$mem_latest($name) - $mem_base($name)}]
+               lappend list [format "%30s %10s %10s %12s %12s %8s" $module \
+                                $mem_base($allocs) $mem_latest($allocs) \
+                                $mem_base($name) $mem_latest($name) $leak_bytes]
+            } elseif {![info exists mem_base($name)]} {
+               set leak_bytes $mem_latest($name)
+               lappend list [format "%30s %10s %10s %12s %12s %8s" $module \
+                                0 $mem_latest($allocs) \
+                                0 $mem_latest($name) $leak_bytes]
+            } elseif {![info exists mem_latest($name)]} {
+               set leak_bytes "-$mem_base($name)"
+               lappend list [format "%30s %10s %10s %12s %12s %8s" $module \
+                                $mem_base($allocs) 0 \
+                                $mem_base($name) 0 $leak_bytes]
+            }
+         }
+         puts "$role,qfp,$mem_type"
+         set list [lsort -command mycompare $list]
+         if {[llength $list] > $top_leaks} {
+            set list [lrange $list 0 [expr $top_leaks-1]]
+         }
+         foreach entry $list {puts $entry}
+         #add a new line after each process (if there were leaks in that proc)
+         if {[llength $list]} {puts ""}
+      }
+   }
+}
+
+proc memleak_detect {args} {
+   global platform proc_list standby mem_base mem_latest leak_threshold top_leaks leak_types
+   foreach leak $leak_types {
+      global $leak
+   }
+
+   #User can provide 0 or 1 or 2 arguments to this
+   switch -exact [llength $args] {
+      0 {
+         #Get new snapshot of memory
+         array unset mem_latest
+         array set mem_latest [memleak_snapshot]
+        }
+      1 {
+         #Treat the user provided argument as the baseline
+         global $args
+         array set tmp_mem_base [array get mem_base]
+         array unset mem_base
+         array set mem_base [array get $args]
+         #Get new snapshot of memory
+         array unset mem_latest
+         array set mem_latest [memleak_snapshot]
+        }
+      2 {
+         #User provided both snapshots to compare, just run the report
+         set arg0 [lindex $args 0]
+         set arg1 [lindex $args 1]
+         global $arg0 $arg1
+         array set tmp_mem_base [array get mem_base]
+         array set tmp_mem_latest [array get mem_latest]
+         array unset mem_base
+         array unset mem_latest
+         array set mem_base [array get $arg0]
+         array set mem_latest [array get $arg1]
+        }
+      default {
+         puts "invalid argument"
+         return
+        }
+   }
+
+
+   #Now start the report generation
+   puts "!!!MEMORY LEAK REPORT!!!"
+   print_border =
+   puts [format "%-15s %s %s" "Script Version" : $mem_base(script_version)]
+   puts [format "%-15s %s %s" "Image Version" : $mem_base(image_version)]
+   puts [format "%-15s %s %s" "Snapshot1 Time" : $mem_base(time)]
+   puts [format "%-15s %s %s" "Snapshot2 Time" : $mem_latest(time)]
+   print_border =
+
+   #Print deltas for key system load parameters
+   print_sl_delta a
+
+   #Print RSS leak summary
+   if {$rss_leaks} {
+      set act_leak_proc_list [print_rss_leaks a]
+   }
+
+   #Print IOS leaks via 'sh proc mem sorted' (holdings) tracking
+   if {[regexp {ios} $proc_list] && $ios_procmem_leaks} {
+      print_ios_procmem_leaks a
+   }
+
+   #Print IOS leaks via 'sh mem allocating-pc totals' tracking
+   if {[regexp {ios} $proc_list] && $ios_allocpc_leaks} {
+      print_ios_allocpc_leaks a
+   }
+
+   #Print IOS leaks via 'sh chunk brief' tracking
+   if {[regexp {ios} $proc_list] && $ios_chunk_leaks} {
+      print_ios_chunk_leaks a
+   }
+
+   #Print IOS GD leaks
+   if {[regexp {ios} $proc_list] && $ios_gd_leaks} {
+      print_ios_gd_leaks a
+   }
+
+   #Print IOS GD chunk leaks
+   if {[regexp {ios} $proc_list] && $ios_gdchunk_leaks} {
+      print_ios_gdchunk_leaks a
+   }
+
+   #Print IOS buffer leaks
+   if {[regexp {ios} $proc_list] && $ios_buffer_leaks} {
+      print_ios_buffer_leaks a
+   }
+
+   #Print all bmalloc leaks for each proc
+   if {$bmalloc_leaks} {
+      print_bmalloc_leaks a
+   }
+
+   #Print all bmalloc chunk leaks for each proc
+   if {$bmchunk_leaks} {
+      print_bmchunk_leaks a
+   }
+
+   #Print all tdlmsg leaks for each proc
+   if {$tdlmsg_leaks} {
+      print_tdlmsg_leaks a
+   }
+
+   #Print all tdldb leaks for each proc
+   if {$tdldb_leaks} {
+      print_tdldb_leaks a
+   }
+
+   #Print maroon malloc leaks for each proc
+   if {$mmalloc_leaks} {
+      print_alloc_comp_leaks a
+      print_alloc_data_leaks a
+      print_callsite_leaks a
+   }
+
+   #Print smaps leaks for each proc
+   if {$smaps_leaks} {
+      print_smaps_leaks a
+   }
+
+   #print QFP mem leak summary
+   if {$qfp_leaks && ($platform == "cat9800" || $platform == "asr1k" || \
+       $platform == "isr4k" || $platform == "isr1k") || $platform == "csr1k"} {
+      print_qfp_mem_leaks a
+   }
+
+   #Print all leak reports for standby
+   if {$standby} {
+      print_sl_delta s
+      if {$rss_leaks} {
+         set std_leak_proc_list [print_rss_leaks s]
+      }
+      if {$ios_procmem_leaks} {
+         #print_ios_procmem_leaks s
+      }
+      if {$ios_allocpc_leaks} {
+         #print_ios_allocpc_leaks s
+      }
+      if {$ios_chunk_leaks} {
+         #print_ios_chunk_leaks s
+      }
+      if {$ios_gd_leaks} {
+         #print_ios_gd_leaks s
+      }
+      if {$ios_gdchunk_leaks} {
+         #print_ios_gdchunk_leaks s
+      }
+      if {$ios_buffer_leaks} {
+         #print_ios_buffer_leaks s
+      }
+      if {$bmalloc_leaks} {
+         print_bmalloc_leaks s
+      }
+      if {$bmchunk_leaks} {
+         print_bmchunk_leaks s
+      }
+      if {$tdlmsg_leaks} {
+         print_tdlmsg_leaks s
+      }
+      if {$tdldb_leaks} {
+         print_tdldb_leaks s
+      }
+      if {$mmalloc_leaks} {
+         print_alloc_comp_leaks s
+         print_alloc_data_leaks s
+         print_callsite_leaks s
+      }
+      if {$smaps_leaks} {
+         print_smaps_leaks s
+      }
+      if {$qfp_leaks && ($platform == "cat9800" || $platform == "asr1k" || \
+          $platform == "isr4k" || $platform == "isr1k") || $platform == "csr1k"} {
+         print_qfp_mem_leaks s
+      }
+   }
+
+   #Restore the old mem_base and mem_latest if overwritten
+   if {[info exists tmp_mem_base]} {
+      array unset mem_base
+      array set mem_base [array get tmp_mem_base]
+   }
+   if {[info exists tmp_mem_latest]} {
+      array unset mem_latest
+      array set mem_latest [array get tmp_mem_latest]
+   }
+}
+
+proc memleak_detect_periodic {interval iterations} {
+   global m0 debug backtrace_depth standby
+   #enable backtrace by default
+   set backtrace_depth 10
+   #stop and clear any backtrace enablement done outside of the script
+   stop_callsite_backtrace a
+   clear_callsite_backtrace a
+   if {$standby} {
+      stop_callsite_backtrace s
+      clear_callsite_backtrace s
+   }
+   set interval [expr {$interval * 60000}]
+   #subtract time taken for snapshot so periodic reports will come as expected
+   set t1 [clock seconds]
+   array set m0 [memleak_snapshot]
+   #save the snapshot to flash to retrive later if needed
+   save_snapshot m0
+   set t2 [clock seconds]
+   set snapshot_time [expr {($t2 - $t1) * 1000}]
+   set sleep_time [expr {$interval - $snapshot_time}]
+   #if snapshot time was more than specified interval, make sure after call does not fail
+   if {$sleep_time < 0} {set sleep_time 0}
+
+   for {set i 1} {$i <= $iterations} {incr i} {
+      after $sleep_time
+      if {$debug} {puts "Executing iteration $i in periodic detect"}
+      global m$i
+      set t1 [clock seconds]
+      array set m$i [memleak_snapshot]
+      set t2 [clock seconds]
+      set snapshot_time [expr {($t2 - $t1) * 1000}]
+      set sleep_time [expr {$interval - $snapshot_time}]
+      if {$sleep_time < 0} {set sleep_time 0}
+      memleak_detect m0 m$i
+      #save the snapshot to flash and unset to release memory
+      save_snapshot m$i
+      array unset m$i
+   }
+}
+
+proc save_snapshot {arr_name} {
+   global $arr_name
+   set fd [open flash:/$arr_name w]
+   puts $fd [array get $arr_name]
+   close $fd
+}
+
+proc load_snapshot {arr_name} {
+   global $arr_name
+   set fd [open flash:/$arr_name r]
+   array set $arr_name [read $fd]
+   close $fd
+}
+
+########## Following is executed on sourcing the tcl script ##########
+#if debug is already set to 1, let it be
+if {![info exists debug] || $debug != 1} {
+   set debug 0
+}
+get_image_info
+set_proc_list
+#Determine if this is dual_ios system   
+if {$platform == "asr1k"} {
+   set cmd "show platform | inc R0/"
+   if {$debug} {puts "Executing $cmd"} 
+   set out [exec "$cmd"]
+   if {[regexp "R0/" $out]} {
+      #standby flag not required now
+      set standby 0
+   }
+}
+# Enable all leaks except iosgd and iosgdchunk leaks by default
+enable_all_leaks
+set ios_gd_leaks 0
+set ios_gdchunk_leaks 0
+
+puts "### To be used only by Cisco TAC/Escalations team ###"
+puts "### To be used by Cisco Support team to gather relevant data for analysis by engineering team ###"
+puts "### Output and functionality of the commands may change without notice ###"
+puts "### False positives may be reported as true memory usage depends on lot of factors ###"
+
