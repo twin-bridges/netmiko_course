@@ -1,7 +1,5 @@
 from pathlib import Path
 import pytest
-import os
-import subprocess
 
 from utilities import subprocess_runner
 
