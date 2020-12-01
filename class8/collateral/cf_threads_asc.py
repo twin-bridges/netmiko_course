@@ -2,6 +2,7 @@ import os
 import yaml
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from getpass import getpass
 from netmiko import ConnectHandler
 
 
@@ -45,7 +46,12 @@ if __name__ == "__main__":
         device_dict = my_devices[device_name]
         device_dict["password"] = password
         # future = pool.submit(ssh_conn, device_name, device_dict, "show ip arp")
-        future = pool.submit(ssh_conn, device_name=device_name, device_dict=device_dict, cmd="show ip arp")
+        future = pool.submit(
+            ssh_conn,
+            device_name=device_name,
+            device_dict=device_dict,
+            cmd="show ip arp",
+        )
         future_list.append(future)
 
     for future in as_completed(future_list):

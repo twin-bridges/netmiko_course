@@ -2,6 +2,7 @@ import os
 import yaml
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime
+from getpass import getpass
 from netmiko import ConnectHandler
 
 
