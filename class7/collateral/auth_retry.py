@@ -5,14 +5,12 @@ from netmiko import NetmikoAuthenticationException
 
 
 # Code so automated tests will run properly
-password = (
-    os.getenv("NETMIKO_PASSWORD") if os.getenv("NETMIKO_PASSWORD") else getpass()
-)
+password = os.getenv("NETMIKO_PASSWORD") if os.getenv("NETMIKO_PASSWORD") else getpass()
 cisco3 = {
     "device_type": "cisco_ios",
     "host": "cisco3.lasthop.io",
     "username": "pyclass",
-    "password": "invalid"
+    "password": "invalid",
 }
 
 output = ""

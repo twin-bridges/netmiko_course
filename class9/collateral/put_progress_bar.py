@@ -3,9 +3,7 @@ from getpass import getpass
 from netmiko import ConnectHandler, file_transfer, progress_bar
 
 # Code so automated tests will run properly
-password = (
-    os.getenv("NETMIKO_PASSWORD") if os.getenv("NETMIKO_PASSWORD") else getpass()
-)
+password = os.getenv("NETMIKO_PASSWORD") if os.getenv("NETMIKO_PASSWORD") else getpass()
 
 # Need a privilege15 account (no enable call)
 cisco3 = {
@@ -28,8 +26,8 @@ transfer_dict = file_transfer(
     dest_file=dest_file,
     file_system=file_system,
     direction=direction,
-    overwrite_file=True,    # default "will not overwrite"
-    progress4=progress_bar
+    overwrite_file=True,  # default "will not overwrite"
+    progress4=progress_bar,
 )
 ssh_conn.disconnect()
 print(transfer_dict)

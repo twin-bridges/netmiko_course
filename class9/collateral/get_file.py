@@ -3,9 +3,7 @@ from getpass import getpass
 from netmiko import ConnectHandler, file_transfer
 
 # Code so automated tests will run properly
-password = (
-    os.getenv("NETMIKO_PASSWORD") if os.getenv("NETMIKO_PASSWORD") else getpass()
-)
+password = os.getenv("NETMIKO_PASSWORD") if os.getenv("NETMIKO_PASSWORD") else getpass()
 
 # Need a privilege15 account (no enable call)
 cisco3 = {
@@ -29,7 +27,7 @@ transfer_dict = file_transfer(
     file_system=file_system,
     direction=direction,
     # Overwrite the target file (if it already exists)
-    overwrite_file=True,    # default "will not overwrite"
+    overwrite_file=True,  # default "will not overwrite"
     # verify_file=True,     # default "will verify"
 )
 print(transfer_dict)

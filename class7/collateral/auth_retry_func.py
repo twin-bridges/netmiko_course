@@ -29,7 +29,7 @@ if __name__ == "__main__":
 
     # Code so automated tests will run properly
     password = (
-      os.getenv("NETMIKO_PASSWORD") if os.getenv("NETMIKO_PASSWORD") else getpass()
+        os.getenv("NETMIKO_PASSWORD") if os.getenv("NETMIKO_PASSWORD") else getpass()
     )
 
     cisco3 = {
