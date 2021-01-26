@@ -1,32 +1,47 @@
-"""
-no global_delay_factor and fast_cli=True 3.7 seconds
-no global_delay_factor and fast_cli=False 4.4 seconds
-global_delay_factor=2 and fast_cli=False 7.1 seconds
-global_delay_factor=4 and fast_cli=False 12.8 seconds
-
-"""
 import os
 from netmiko import ConnectHandler
 from getpass import getpass
 from datetime import datetime
 
+
+def netmiko_exec(device):
+    start_time = datetime.now()
+    with ConnectHandler(**device) as net_connect:
+        print(f"\n\nPrompt: {net_connect.find_prompt()}\n")
+    end_time = datetime.now()
+    return end_time - start_time
+
+
 # Code so automated tests will run properly
 password = os.getenv("NETMIKO_PASSWORD") if os.getenv("NETMIKO_PASSWORD") else getpass()
-
-# Case1 fast_cli=True and no global_delay_factor
-my_device = {
+base_device = {
     "device_type": "cisco_ios",
     "host": "cisco3.lasthop.io",
     "username": "pyclass",
     "password": password,
-    # "fast_cli": True,     This is the default value
-    # "global_delay_factor": 1, This is the default value
-    
 }
 
-start_time = datetime.now()
-with ConnectHandler(**my_device) as net_connect:
-    print(net_connect.find_prompt())
-end_time = datetime.now()
-exec_time = end_time - start_time
+# Case1 fast_cli=True and no global_delay_factor (defaults)
+case1 = base_device.copy()
+exec_time = netmiko_exec(case1)
 print(f"Case1 Execution Time (fast_cli=True/no global_delay_factor): {exec_time}")
+
+# Case2 fast_cli=False and no global_delay_factor
+case2 = base_device.copy()
+case2["fast_cli"] = False
+exec_time = netmiko_exec(case2)
+print(f"Case2 Execution Time (fast_cli=False/no global_delay_factor): {exec_time}")
+
+# Case3 fast_cli=False and global_delay_factor=2
+case3 = base_device.copy()
+case3["fast_cli"] = False
+case3["global_delay_factor"] = 2
+exec_time = netmiko_exec(case3)
+print(f"Case3 Execution Time (fast_cli=False/global_delay_factor=2): {exec_time}")
+
+# Case4 fast_cli=False and global_delay_factor=4
+case4 = base_device.copy()
+case4["fast_cli"] = False
+case4["global_delay_factor"] = 4
+exec_time = netmiko_exec(case4)
+print(f"Case4 Execution Time (fast_cli=False/global_delay_factor=4): {exec_time}")
