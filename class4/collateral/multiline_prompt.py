@@ -16,7 +16,7 @@ my_device = {
 
 with ConnectHandler(**my_device) as net_connect:
 
-    filename = "cisco3-cfg-May-15-15-33-57.634-112"
+    filename = "file_ex_3.txt"
     cmd = f"del flash:/{filename}"
 
     output = net_connect.send_command(
