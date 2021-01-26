@@ -24,32 +24,46 @@ def test_runner_collateral(test_case):
     assert "Traceback" not in std_out
 
 
-# def test_class2_ex1():
-#    base_path = "../class2/exercises/"
-#    cmd_list = ["python", "exercise1.py"]
-#    std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
-#    assert return_code == 0
-#    assert std_err == ""
-#    assert std_out.count("10.220.88.1") == 4
-#
-#
-# def test_class2_ex2():
-#    base_path = "../class2/exercises/"
-#    cmd_list = ["python", "exercise2.py"]
-#    std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
-#    assert return_code == 0
-#    assert std_err == ""
-#    assert "cisco3>" in std_out
-#    assert "cisco3#" in std_out
-#
-#
-# def test_class2_ex3():
-#    base_path = "../class2/exercises/"
-#    cmd_list = ["python", "exercise3.py"]
-#    std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
-#    assert return_code == 0
-#    assert std_err == ""
-#    assert "cisco3>" in std_out
-#    assert "cisco3#" in std_out
-#    assert "cisco4>" in std_out
-#    assert "cisco4#" in std_out
+def test_class4_ex1():
+    base_path = "../class4/exercises/"
+    cmd_list = ["python", "exercise1.py"]
+    std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
+    assert return_code == 0
+    assert std_err == ""
+    assert "copy flash" in std_out
+    assert "Copy in progress" in std_out
+    assert "bytes copied" in std_out
+
+
+def test_class4_ex2():
+    base_path = "../class4/exercises/"
+    cmd_list = ["python", "exercise2.py"]
+    std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
+    assert return_code == 0
+    assert std_err == ""
+    assert "copy flash" in std_out
+    assert "Copy in progress" in std_out
+    assert "bytes copied" in std_out
+
+
+def test_class4_ex3():
+    base_path = "../class4/exercises/"
+    cmd_list = ["python", "exercise3.py"]
+    std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
+    assert return_code == 0
+    assert std_err == ""
+    assert "Case1" in std_out
+    assert "Case2" in std_out
+    assert "Case3" in std_out
+    assert "Case4" in std_out
+    assert std_out.count("cisco3#") == 4
+
+
+def test_class4_ex4():
+    base_path = "../class4/exercises/"
+    cmd_list = ["python", "exercise4.py"]
+    std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
+    assert return_code == 0
+    assert std_err == ""
+    assert "Building configuration..." in std_out
+    assert "Current configuration" in std_out

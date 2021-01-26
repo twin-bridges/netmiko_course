@@ -18,7 +18,6 @@ net_connect = ConnectHandler(**my_device)
 src_file = "testx.txt"
 dest_file = "test-ktb.txt"
 copy_cmd = f"copy flash:/{src_file} flash:/{dest_file}"
-print(copy_cmd)
 
 output = net_connect.send_command(
     command_string=copy_cmd,
