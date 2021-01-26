@@ -67,3 +67,4 @@ def test_class4_ex4():
     assert std_err == ""
     assert "Building configuration..." in std_out
     assert "Current configuration" in std_out
+    assert "Execution Time" in std_out
