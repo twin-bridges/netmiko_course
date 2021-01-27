@@ -2,6 +2,7 @@ import os
 from getpass import getpass
 import yaml
 from netmiko import ConnectHandler
+import time
 
 
 def load_devices(device_file="lab_devices.yml"):
@@ -33,5 +34,6 @@ if __name__ == "__main__":
         net_connect = ConnectHandler(**device)
         output = net_connect.send_config_set(cfg_changes)
         output += net_connect.save_config()
-        print(output)
+        print(f"\n{output}\n\n")
         net_connect.disconnect()
+        time.sleep(2)
