@@ -44,4 +44,6 @@ with ConnectHandler(**nxos1) as net_connect:
     print(f"{banner}\n{output}\n{banner}")
 
     print("\n\nRestoring hostname to original value...\n")
+    net_connect.set_base_prompt()
     output = net_connect.send_config_set("hostname nxos1")
+    net_connect.set_base_prompt()

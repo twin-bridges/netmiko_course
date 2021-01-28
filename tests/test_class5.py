@@ -29,32 +29,35 @@ def test_runner_collateral(test_case):
     assert "Traceback" not in std_out
 
 
-# def test_class2_ex1():
-#    base_path = "../class2/exercises/"
-#    cmd_list = ["python", "exercise1.py"]
-#    std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
-#    assert return_code == 0
-#    assert std_err == ""
-#    assert std_out.count("10.220.88.1") == 4
-#
-#
-# def test_class2_ex2():
-#    base_path = "../class2/exercises/"
-#    cmd_list = ["python", "exercise2.py"]
-#    std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
-#    assert return_code == 0
-#    assert std_err == ""
-#    assert "cisco3>" in std_out
-#    assert "cisco3#" in std_out
-#
-#
-# def test_class2_ex3():
-#    base_path = "../class2/exercises/"
-#    cmd_list = ["python", "exercise3.py"]
-#    std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
-#    assert return_code == 0
-#    assert std_err == ""
-#    assert "cisco3>" in std_out
-#    assert "cisco3#" in std_out
-#    assert "cisco4>" in std_out
-#    assert "cisco4#" in std_out
+def test_class5_ex1():
+    base_path = "../class5/exercises/"
+    cmd_list = ["python", "exercise1.py"]
+    std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
+    assert return_code == 0
+    assert std_err == ""
+    assert std_out.count("ip domain-lookup") == 2
+    assert std_out.count("ip domain-name bogus.com") == 2
+
+
+def test_class5_ex2():
+    base_path = "../class5/exercises/"
+    cmd_list = ["python", "exercise2.py"]
+    std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
+    assert return_code == 0
+    assert std_err == ""
+    assert std_out.count("vlan 501") == 2
+    assert std_out.count("vlan 502") == 2
+
+
+def test_class5_ex3():
+    base_path = "../class5/exercises/"
+    cmd_list = ["python", "exercise3.py"]
+    std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
+    assert return_code == 0
+    assert std_err == ""
+    assert "Changing the terminal width" in std_out
+    assert "Setting the hostname to a very long value" in std_out
+    assert "Testing long command that should now fail" in std_out
+    assert "long command failed with an exception" in std_out
+    assert std_out.count("show ip interface brief vrf management | include manage") == 2
+    assert "Restoring hostname to original value" in std_out
