@@ -1,0 +1,4 @@
+vlan 501
+  name blue501
+vlan 502
+  name blue502
