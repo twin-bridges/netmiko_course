@@ -1,0 +1,10 @@
+host jumphost
+  IdentitiesOnly yes
+  IdentityFile ~/.ssh/student_key
+  User kbyers
+  HostName pydev1.lasthop.io
+
+host * !jumphost
+  User pyclass
+  # Force usage of this SSH config file
+  ProxyCommand ssh -F ~/netmiko_course/class6/exercises/my_ssh_config -W %h:%p jumphost
