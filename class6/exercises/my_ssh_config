@@ -1,6 +1,6 @@
 host jumphost
   IdentitiesOnly yes
-  IdentityFile ~/.ssh/student_key
+  IdentityFile ~/.ssh/my_ssh_key
   User kbyers
   HostName pydev1.lasthop.io
 
