@@ -43,3 +43,34 @@ def test_runner_collateral(test_case):
     std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=script_dir)
     assert return_code == 0
     assert std_err == ""
+
+
+def test_class7_ex1():
+    base_path = "../class7/exercises/"
+    cmd_list = ["python", "exercise1.py"]
+    std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
+    assert return_code == 0
+    assert std_err == ""
+    assert "Address         Age       MAC Address     Interface       Flags" in std_out
+
+
+def test_class7_ex2():
+    base_path = "../class7/exercises/"
+    cmd_list = ["python", "exercise2.py"]
+    std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
+    assert return_code == 0
+    assert std_err == ""
+    assert "Connection failed" in std_out
+    assert "Initial connection failed...retrying" in std_out
+    assert "Authenticated successfully" in std_out
+    assert "Address         Age       MAC Address     Interface       Flags" in std_out
+
+
+def test_class7_ex3():
+    base_path = "../class7/exercises/"
+    cmd_list = ["python", "exercise3.py"]
+    std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
+    assert return_code == 0
+    assert std_err == ""
+    assert "Successfully connected to device" in std_out
+    assert "nxos2#" in std_out

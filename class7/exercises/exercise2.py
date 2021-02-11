@@ -1,3 +1,4 @@
+import os
 from getpass import getpass
 from netmiko import ConnectHandler
 from netmiko import NetmikoTimeoutException, NetmikoAuthenticationException
@@ -22,6 +23,11 @@ def netmiko_connect(device):
 
 if __name__ == "__main__":
 
+    # Code so automated tests will run properly
+    password = (
+        os.getenv("NETMIKO_PASSWORD") if os.getenv("NETMIKO_PASSWORD") else getpass()
+    )
+
     nxos2 = {
         "device_type": "cisco_nxos",
         "host": "nxos2.lasthop.io",
@@ -33,7 +39,7 @@ if __name__ == "__main__":
     (connect_status, net_connect) = netmiko_connect(nxos2)
     if not connect_status:
         print("\nInitial connection failed...retrying\n\n")
-        nxos2["password"] = getpass()
+        nxos2["password"] = password
         nxos2["port"] = 22
 
     (connect_status, net_connect) = netmiko_connect(nxos2)

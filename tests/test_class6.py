@@ -101,6 +101,7 @@ def test_runner_collateral(test_case):
 #     # assert return_code == 0
 #     assert std_err == ""
 
+
 def test_class6_ex1():
     base_path = "../class6/exercises/"
     cmd_list = ["python", "exercise1.py"]
@@ -111,7 +112,7 @@ def test_class6_ex1():
 
 
 # Will fail in the lab environment as things are missing (SSH keyfile, SSH trust)
-#def test_class6_ex3():
+# def test_class6_ex3():
 #    base_path = "../class6/exercises/"
 #    cmd_list = ["python", "exercise3.py"]
 #    std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)

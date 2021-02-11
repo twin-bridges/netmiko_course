@@ -1,3 +1,4 @@
+import os
 from getpass import getpass
 from netmiko import ConnectHandler
 from netmiko import NetmikoTimeoutException, NetmikoAuthenticationException
@@ -20,32 +21,33 @@ def netmiko_connect(device_name, device):
     """
     hostname = device["host"]
     port = device.get("port", 22)
+    msg = ""
 
     try:
         net_connect = ConnectHandler(**device)
         msg = f"Netmiko connection succesful to {hostname}:{port}"
         logger.info(msg)
         return (True, net_connect)
-    except NetmikoAuthenticationException as e:
+    except NetmikoAuthenticationException:
         msg = f"Authentication failure to: {device_name} {hostname}:{port}"
-        logger.error(msg)
-        return (False, None)
     except NetmikoTimeoutException as e:
         if "DNS failure" in str(e):
             msg = (
                 f"Device {device_name} failed due to a DNS failure, hostname {hostname}"
             )
-            logger.error(msg)
-            return (False, None)
         elif "TCP connection to device failed" in str(e):
             msg = f"Netmiko was unable to reach the provided host and port: {hostname}:{port}"
-            logger.error(msg)
-            return (False, None)
+
+    logger.error(msg)
+    return (False, None)
 
 
 if __name__ == "__main__":
 
-    password = getpass()
+    # Code so automated tests will run properly
+    password = (
+        os.getenv("NETMIKO_PASSWORD") if os.getenv("NETMIKO_PASSWORD") else getpass()
+    )
 
     # DNS failure
     vmx1 = {
@@ -97,4 +99,3 @@ if __name__ == "__main__":
         print("-" * 20)
         print(net_connect.find_prompt())
         print("\n\n")
-
