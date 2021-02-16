@@ -3,9 +3,9 @@ from netmiko import ConnectHandler
 cisco3 = {
     "device_type": "cisco_ios",
     "host": "cisco3.lasthop.io",
-    "username": "testuser",
+    "username": "student1",
     "use_keys": True,
-    "key_file": "~/.ssh/test_rsa",
+    "key_file": "~/.ssh/student_key",
 }
 
 with ConnectHandler(**cisco3) as net_connect:
