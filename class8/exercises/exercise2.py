@@ -1,5 +1,5 @@
 import os
-from concurrent.futures import ThreadPoolExecutor, wait
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from getpass import getpass
 
 # Store certain functions in another module so the can be used across multiple exercises.
@@ -15,7 +15,7 @@ if __name__ == "__main__":
 
     my_devices = load_devices()
     device_list = my_devices["all"]
-    pool = ThreadPoolExecutor(20)
+    pool = ProcessPoolExecutor(20)
 
     cmd_dict = {"cisco_nxos": "show ip arp vrf management", "juniper_junos": "show arp"}
 
@@ -32,11 +32,8 @@ if __name__ == "__main__":
         )
         future_list.append(future)
 
-    # Waits until all the pending threads are done
-    wait(future_list)
-
     # Display the results
-    for future in future_list:
+    for future in as_completed(future_list):
         result = future.result()
         device_name, output = result
         print("-" * 20)
