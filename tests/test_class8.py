@@ -22,3 +22,21 @@ def test_runner_collateral(test_case):
     std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=script_dir)
     assert return_code == 0
     assert std_err == ""
+
+
+def test_class8_ex1():
+    base_path = "../class8/exercises/"
+    cmd_list = ["python", "exercise1.py"]
+    std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
+    assert return_code == 0
+    assert std_err == ""
+    assert std_out.count("Address") == 14
+
+
+def test_class8_ex2():
+    base_path = "../class8/exercises/"
+    cmd_list = ["python", "exercise2.py"]
+    std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
+    assert return_code == 0
+    assert std_err == ""
+    assert std_out.count("Address") == 14
