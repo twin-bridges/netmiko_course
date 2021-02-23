@@ -30,7 +30,7 @@ for device in (cisco3, cisco4):
     print("\n\n")
     print("-" * 20)
     print(f"\nTransferring configuration file: {device['host']}")
-    file_exists, file_transferred, md5_verify = file_transfer(
+    transfer_dict = file_transfer(
         ssh_conn,
         source_file=source_file,
         dest_file=dest_file,
@@ -38,6 +38,8 @@ for device in (cisco3, cisco4):
         direction=direction,
         overwrite_file=True,  # default "will not overwrite"
     )
+    file_exists = transfer_dict["file_exists"]
+    md5_verify = transfer_dict["file_verified"]
 
     # Merge configuration change
     if file_exists and md5_verify:

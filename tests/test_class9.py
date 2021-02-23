@@ -24,6 +24,7 @@ def test_runner_collateral(test_case):
     assert return_code == 0
     assert std_err == ""
 
+
 def test_class9_ex1():
     base_path = "../class9/exercises/"
     cmd_list = ["python", "exercise1.py"]
@@ -32,3 +33,15 @@ def test_class9_ex1():
     assert std_err == ""
     assert std_out.count("Name servers are correct") == 2
     assert std_out.count("Domain name is correct") == 2
+
+
+def test_class9_ex2():
+    base_path = "../class9/exercises/"
+    cmd_list = ["python", "exercise2.py"]
+    std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
+    assert return_code == 0
+    assert std_err == ""
+    assert "Redirecting" in std_out
+    assert "Verifying" in std_out
+    assert "Retrieving" in std_out
+    assert "file successfully transferred" in std_out
