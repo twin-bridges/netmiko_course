@@ -1,1 +1,0 @@
-{{ device_id }} {{ local_intf }} {{ hold_time }} {{ capability }} {{ port_id }}
