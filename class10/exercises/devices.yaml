@@ -1,0 +1,18 @@
+cisco3:
+  device_type: cisco_ios
+  hostname: cisco3.lasthop.io
+cisco4:
+  device_type: cisco_ios
+  hostname: cisco4.lasthop.io
+nxos1:
+  device_type: null
+  hostname: nxos1.lasthop.io
+nxos2:
+  device_type: null
+  hostname: nxos2.lasthop.io
+vmx1:
+  device_type: juniper_junos
+  hostname: vmx1.lasthop.io
+vmx2:
+  device_type: juniper_junos
+  hostname: vmx2.lasthop.io
