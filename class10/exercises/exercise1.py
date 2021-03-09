@@ -1,5 +1,4 @@
 import os
-import yaml
 from getpass import getpass
 from netmiko import SSHDetect
 from concurrent.futures import ThreadPoolExecutor, as_completed

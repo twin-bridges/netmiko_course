@@ -11,6 +11,7 @@ my_device = {
     "host": "arista1.lasthop.io",
     "username": "pyclass",
     "password": password,
+    "session_log": "output.txt",
 }
 
 with ConnectHandler(**my_device) as net_connect:
@@ -18,9 +19,8 @@ with ConnectHandler(**my_device) as net_connect:
     # Send command down the channel - don't forget the enter!
     net_connect.write_channel("show ip int brief\n")
 
-    # You can't try to read right away - your Python program is faster than the device
+    # You probably can't read right away - your Python program is faster than the device (so sleep)
     time.sleep(1)
-
     output = net_connect.read_channel()
     print(output)
     print()
