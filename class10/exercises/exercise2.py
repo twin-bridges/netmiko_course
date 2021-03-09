@@ -1,7 +1,6 @@
 import os
 import yaml
 from getpass import getpass
-from pprint import pprint
 from netmiko import SSHDetect
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -40,14 +39,17 @@ if __name__ == "__main__":
 
     # Display the results
     my_devices = {}
+    print()
     for future in as_completed(future_list):
         hostname, device_type = future.result()
-        print(f"{hostname} --> {device_type}")
+        print(f"{hostname} -> {device_type}")
         name = hostname.split(".")[0]
         my_devices[name] = {}
         my_devices[name]["hostname"] = hostname
         my_devices[name]["device_type"] = device_type
+    print()
 
     # Write external YAML file
+    print("\nCreating devices.yaml file\n\n")
     with open(r"devices.yaml", "w") as f:
         yaml.dump(my_devices, f)

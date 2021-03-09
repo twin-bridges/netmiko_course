@@ -29,6 +29,7 @@ if __name__ == "__main__":
 
     with ConnectHandler(**my_device) as net_connect:
 
+        print()
         print(net_connect.find_prompt())
 
         cmd = "telnet 10.220.88.22\n"
@@ -45,3 +46,4 @@ if __name__ == "__main__":
 
         net_connect.write_channel("exit\n")
         read_device(net_connect, sleep=1)
+        print()

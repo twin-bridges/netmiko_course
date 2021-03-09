@@ -42,6 +42,10 @@ if __name__ == "__main__":
         future_list.append(future)
 
     # Display the results
+    print()
+    print("{:20} {:20}".format("hostname", "device_type"))
+    print("{:20} {:20}".format("--------", "-----------"))
     for future in as_completed(future_list):
         hostname, device_type = future.result()
-        print(f"{hostname} --> {device_type}")
+        print(f"{hostname:20} {device_type:20}")
+    print()
