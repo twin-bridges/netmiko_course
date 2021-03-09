@@ -47,7 +47,6 @@ if __name__ == "__main__":
         my_devices[name] = {}
         my_devices[name]["hostname"] = hostname
         my_devices[name]["device_type"] = device_type
-    pprint(my_devices)
 
     # Write external YAML file
     with open(r"devices.yaml", "w") as f:

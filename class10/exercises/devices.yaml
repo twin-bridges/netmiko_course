@@ -5,10 +5,10 @@ cisco4:
   device_type: cisco_ios
   hostname: cisco4.lasthop.io
 nxos1:
-  device_type: null
+  device_type: cisco_nxos
   hostname: nxos1.lasthop.io
 nxos2:
-  device_type: null
+  device_type: cisco_nxos
   hostname: nxos2.lasthop.io
 vmx1:
   device_type: juniper_junos
