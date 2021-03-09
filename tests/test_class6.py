@@ -59,7 +59,7 @@ def run_ssh_agent():
 
 TEST_COLLATERAL = [
     "../class6/collateral/ssh_keys.py",
-    "../class6/collateral/ssh_keys_encr.py",
+    # "../class6/collateral/ssh_keys_encr.py",
     "../class6/collateral/ssh_config_file.py",
     "../class6/collateral/ssh_proxy_jump.py",
     # "../class6/collateral/ssh_keys_agent.py",

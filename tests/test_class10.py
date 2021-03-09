@@ -45,6 +45,7 @@ def test_class10_ex2():
     assert std_out.count("cisco_ios") == 2
     assert std_out.count("cisco_nxos") == 2
     assert std_out.count("juniper_junos") == 2
+    assert "Creating devices.yaml file" in std_out
 
 
 def test_class10_ex3():
