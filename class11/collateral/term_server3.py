@@ -1,8 +1,17 @@
+"""
+Note: Students won't be able to run this code since the terminal server is not accessible.
+"""
+import os
 import time
 from netmiko import ConnectHandler
 from getpass import getpass
 
-password = getpass()
+# Code so automated tests will run properly
+password = (
+    os.getenv("TERM_SERVER_PASSWORD")
+    if os.getenv("TERM_SERVER_PASSWORD")
+    else getpass()
+)
 
 term_server = {
     "device_type": "generic_termserver_telnet",
