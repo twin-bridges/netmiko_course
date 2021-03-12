@@ -8,38 +8,36 @@ password = os.getenv("NETMIKO_PASSWORD") if os.getenv("NETMIKO_PASSWORD") else g
 
 if __name__ == "__main__":
 
-    vmx2 = {
+    device = {
         "device_type": "juniper_junos",
-        "host": "vmx2.lasthop.io",
+        "host": "vmx1.lasthop.io",
         "username": "pyclass",
         "password": password,
-        "session_log": "output.txt",
     }
 
-    with ConnectHandler(**vmx2) as net_connect:
+    net_connect = ConnectHandler(**device)
 
-        print("\n\nSend configuration commands to device:")
-        cfg_commands = [
-            "set system syslog archive size 110k files 3",
-            "set system time-zone America/New_York",
-        ]
-        output = net_connect.send_config_set(cfg_commands)
+    print("\n\nSend configuration commands to device:")
+    cfg_commands = [
+        "set system syslog archive size 110k files 3",
+        "set system time-zone America/New_York",
+    ]
+    output = net_connect.send_config_set(cfg_commands)
 
-        divider = "-" * 20
-        print(f"\n{divider}\n{output}\n{divider}\n")
+    divider = "-" * 20
+    print(f"\n{divider}\n{output}\n{divider}\n")
 
-        print("Commit change...operation is slow")
+    print("Commit change...operation is slow")
 
-        # Standard Commit
-        output = net_connect.commit()
+    # Commit with a comment
+    # output = net_connect.commit(comment="Configuration change using Netmiko (ktb)")
 
-        # Commit with a comment
-        # output = net_connect.commit(comment="Configuration change using Netmiko")
+    print(f"\n{divider}\n{output}\n{divider}\n")
+    print()
 
-        # Commit confirm
-        # output = net_connect.commit(confirm=True, confirm_delay=3)
-        # wait_here = input("Hit enter to continue: ")
-        # output = net_connect.commit()
-
-        print(f"\n{divider}\n{output}\n{divider}\n")
-        print()
+    commit_history = net_connect.send_command("show system commit")
+    commit_history = commit_history.strip()
+    commit_list = commit_history.splitlines()
+    last_commit = commit_list[:2]
+    last_commit = "\n".join(last_commit)
+    print(last_commit)
