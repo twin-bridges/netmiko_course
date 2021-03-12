@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 import pytest
 
@@ -25,15 +26,35 @@ def test_runner_collateral(test_case):
     assert std_err == ""
 
 
-#def test_class11_ex1():
-#    base_path = "../class11/exercises/"
-#    cmd_list = ["python", "exercise1_final.py"]
-#    std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
-#    assert return_code == 0
-#    assert std_err == ""
-#    assert std_out.count("cisco3") == 4
-#    assert std_out.count("netmiko.cisco.cisco_ios.CiscoIosSSH") == 1
-#    assert std_out.count("arista4") == 2
-#    assert std_out.count("netmiko.arista.arista.AristaSSH") == 1
-#    assert std_out.count("Use redispatch to switch the class") == 1
-#    assert std_out.count("completely close SSH session") == 1
+def test_class12_ex1():
+    base_path = "../class12/exercises/"
+    cmd_list = ["python", "exercise1.py"]
+    std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
+    assert return_code == 1
+    assert "IOError" in std_err
+    assert "Fast CLI state" in std_out
+    assert "Global Delay Factor state" in std_out
+    assert "Command execution time" in std_out
+
+
+def test_class12_ex2():
+    base_path = "../class12/exercises/"
+    cmd_list = ["python", "exercise2.py"]
+    std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
+    assert return_code == 0
+    assert std_err == ""
+    assert std_out.count("cisco4") == 3
+    assert re.search(r"cisco4.*\(config\)#", std_out)
+    assert "cisco4-testing#" in std_out
+
+
+def test_class12_ex3():
+    base_path = "../class12/exercises/"
+    cmd_list = ["python", "exercise3.py"]
+    std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
+    assert return_code == 0
+    assert std_err == ""
+    assert "Send configuration commands to device" in std_out
+    assert "Commit change...operation is slow" in std_out
+    assert "commit complete" in std_out
+    assert "Configuration change using Netmiko (ktb)" in std_out

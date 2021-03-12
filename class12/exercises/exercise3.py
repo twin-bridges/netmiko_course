@@ -13,6 +13,7 @@ if __name__ == "__main__":
         "host": "vmx1.lasthop.io",
         "username": "pyclass",
         "password": password,
+        "session_log": "output.txt",
     }
 
     net_connect = ConnectHandler(**device)
@@ -29,8 +30,8 @@ if __name__ == "__main__":
 
     print("Commit change...operation is slow")
 
-    # Commit with a comment
-    # output = net_connect.commit(comment="Configuration change using Netmiko (ktb)")
+    # Commit with a comment. The and_quit=True causes the device to exit config mode post-commit
+    output = net_connect.commit(comment="Configuration change using Netmiko (ktb)", and_quit=True)
 
     print(f"\n{divider}\n{output}\n{divider}\n")
     print()
