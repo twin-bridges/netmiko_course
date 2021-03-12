@@ -31,7 +31,9 @@ if __name__ == "__main__":
     print("Commit change...operation is slow")
 
     # Commit with a comment. The and_quit=True causes the device to exit config mode post-commit
-    output = net_connect.commit(comment="Configuration change using Netmiko (ktb)", and_quit=True)
+    output = net_connect.commit(
+        comment="Configuration change using Netmiko (ktb)", and_quit=True
+    )
 
     print(f"\n{divider}\n{output}\n{divider}\n")
     print()

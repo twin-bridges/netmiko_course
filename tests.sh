@@ -17,6 +17,9 @@ echo "pylama ." \
 && py.test -x -s -v test_class7.py \
 && py.test -x -s -v test_class8.py \
 && py.test -x -s -v test_class9.py \
+&& py.test -x -s -v test_class10.py \
+&& py.test -x -s -v test_class11.py \
+&& py.test -x -s -v test_class12.py \
 \
 || RETURN_CODE=1
 

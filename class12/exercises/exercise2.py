@@ -29,7 +29,7 @@ if __name__ == "__main__":
 
     print("Exit configuration mode:")
     output = net_connect.exit_config_mode()
-    
+
     # Should reset Netmiko's base prompt if you change the hostname
     net_connect.set_base_prompt()
 
