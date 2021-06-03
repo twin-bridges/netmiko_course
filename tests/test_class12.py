@@ -31,7 +31,7 @@ def test_class12_ex1():
     cmd_list = ["python", "exercise1.py"]
     std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
     assert return_code == 1
-    assert "IOError" in std_err
+    assert "OSError" in std_err
     assert "Fast CLI state" in std_out
     assert "Global Delay Factor state" in std_out
     assert "Command execution time" in std_out
