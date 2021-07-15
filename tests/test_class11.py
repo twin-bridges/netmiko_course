@@ -5,12 +5,12 @@ from utilities import subprocess_runner
 
 
 TEST_COLLATERAL = [
-# Require terminal server password
-#    "../class11/collateral/term_server1.py",
-#    "../class11/collateral/term_server2.py",
-#    "../class11/collateral/term_server3.py",
-#    "../class11/collateral/term_server4.py",
-#    "../class11/collateral/redispatch1.py",
+    # Require terminal server password
+    #    "../class11/collateral/term_server1.py",
+    #    "../class11/collateral/term_server2.py",
+    #    "../class11/collateral/term_server3.py",
+    #    "../class11/collateral/term_server4.py",
+    #    "../class11/collateral/redispatch1.py",
 ]
 
 

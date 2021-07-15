@@ -32,8 +32,8 @@ def test_runner_collateral(test_case):
 #     assert std_out.count("cisco_ios") == 2
 #     assert std_out.count("cisco_nxos") == 2
 #     assert std_out.count("juniper_junos") == 2
-# 
-# 
+#
+#
 # def test_class10_ex2():
 #     base_path = "../class10/exercises/"
 #     cmd_list = ["python", "exercise2.py"]
@@ -44,8 +44,8 @@ def test_runner_collateral(test_case):
 #     assert std_out.count("cisco_nxos") == 2
 #     assert std_out.count("juniper_junos") == 2
 #     assert "Creating devices.yaml file" in std_out
-# 
-# 
+#
+#
 # def test_class10_ex3():
 #     base_path = "../class10/exercises/"
 #     cmd_list = ["python", "exercise3.py"]
