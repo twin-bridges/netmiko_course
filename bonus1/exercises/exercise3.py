@@ -24,7 +24,9 @@ except ReadTimeout:
 
 # Gather the entire output
 start_time = datetime.now()
-output = ssh_conn.send_command_timing(command, last_read=10, read_timeout=120, strip_prompt=False)
+output = ssh_conn.send_command_timing(
+    command, last_read=10, read_timeout=120, strip_prompt=False
+)
 end_time = datetime.now()
 
 print("-" * 80)
