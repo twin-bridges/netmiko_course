@@ -1,4 +1,3 @@
-import re
 from pathlib import Path
 import pytest
 
@@ -28,6 +27,7 @@ def test_runner_collateral(test_case):
     std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=script_dir)
     assert return_code == 0
     assert std_err == ""
+
 
 @pytest.mark.parametrize("test_case", TEST_COLLATERAL_EXC)
 def test_runner_collateral_exception(test_case):
