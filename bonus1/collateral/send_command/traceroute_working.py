@@ -1,13 +1,17 @@
+import os
 from getpass import getpass
 from datetime import datetime
 from netmiko import ConnectHandler
 
+# Code so automated tests will run properly
+password = os.getenv("NETMIKO_PASSWORD") if os.getenv("NETMIKO_PASSWORD") else getpass()
+
 device = {
     "host": "cisco3.lasthop.io",
     "username": "pyclass",
-    "password": getpass(),
+    "password": password,
     "device_type": "cisco_xe",
-    "session_log": "traceroute.out",
+    # "session_log": "traceroute.out",
 }
 
 command = "traceroute 10.220.88.28"
