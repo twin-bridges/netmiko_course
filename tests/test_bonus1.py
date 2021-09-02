@@ -6,14 +6,14 @@ from utilities import subprocess_runner
 
 
 TEST_COLLATERAL = [
-#    "../bonus1/collateral/send_command/traceroute_working.py",
-#    "../bonus1/collateral/send_command_timing/traceroute_working.py",
+    #    "../bonus1/collateral/send_command/traceroute_working.py",
+    #    "../bonus1/collateral/send_command_timing/traceroute_working.py",
 ]
 
 TEST_COLLATERAL_EXC = [
-#    "../bonus1/collateral/send_command/traceroute_timeout.py",
-#    "../bonus1/collateral/send_command/traceroute_long.py",
-#    "../bonus1/collateral/send_command_timing/traceroute_timeout.py",
+    #    "../bonus1/collateral/send_command/traceroute_timeout.py",
+    #    "../bonus1/collateral/send_command/traceroute_long.py",
+    #    "../bonus1/collateral/send_command_timing/traceroute_timeout.py",
 ]
 
 
@@ -53,6 +53,7 @@ def test_bonus1_ex1():
     assert "Execution time" in std_out
     # Let show tech-support complete
     time.sleep(120)
+
 
 def test_bonus1_ex2():
     base_path = "../bonus1/exercises/"
