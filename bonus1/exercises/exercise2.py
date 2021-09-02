@@ -16,7 +16,7 @@ device = {
 try:
     ssh_conn = ConnectHandler(**device)
     start = datetime.now()
-    show_tech = ssh_conn.send_command("show tech-support", read_timeout=120)
+    show_tech = ssh_conn.send_command("show tech-support", read_timeout=180)
     print("\nCommand Succeeded.\n")
 except ReadTimeout:
     print("\nProgram failed with ReadTimeout Exception.\n")
@@ -28,5 +28,10 @@ try:
 except Exception:
     pass
 
+print("\n\n")
+print("-" * 60)
+print(show_tech)
+print("-" * 60)
+print("\n\n")
 print(f"Execution time: {end - start}")
 print("\n")
