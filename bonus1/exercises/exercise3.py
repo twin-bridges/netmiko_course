@@ -1,7 +1,7 @@
 import os
 from getpass import getpass
 from datetime import datetime
-from netmiko import ConnectHandler, ReadTimeout
+from netmiko import ConnectHandler
 
 # Code so automated tests will run properly
 password = os.getenv("NETMIKO_PASSWORD") if os.getenv("NETMIKO_PASSWORD") else getpass()
