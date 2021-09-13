@@ -1,6 +1,8 @@
+import os
 from getpass import getpass
 
-password = getpass()
+# Code so automated tests will run properly
+password = os.getenv("NETMIKO_PASSWORD") if os.getenv("NETMIKO_PASSWORD") else getpass()
 
 cisco3 = {
     "device_type": "cisco_xe",

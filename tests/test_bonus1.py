@@ -6,14 +6,14 @@ from utilities import subprocess_runner
 
 
 TEST_COLLATERAL = [
-    #    "../bonus1/collateral/send_command/traceroute_working.py",
-    #    "../bonus1/collateral/send_command_timing/traceroute_working.py",
+    "../bonus1/collateral/send_command/traceroute_working.py",
+    "../bonus1/collateral/send_command_timing/traceroute_working.py",
 ]
 
 TEST_COLLATERAL_EXC = [
-    #    "../bonus1/collateral/send_command/traceroute_timeout.py",
-    #    "../bonus1/collateral/send_command/traceroute_long.py",
-    #    "../bonus1/collateral/send_command_timing/traceroute_timeout.py",
+    "../bonus1/collateral/send_command/traceroute_timeout.py",
+    "../bonus1/collateral/send_command/traceroute_long.py",
+    "../bonus1/collateral/send_command_timing/traceroute_timeout.py",
 ]
 
 
