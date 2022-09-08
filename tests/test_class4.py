@@ -14,7 +14,6 @@ TEST_COLLATERAL = [
 ]
 
 
-
 @pytest.mark.parametrize("test_case", TEST_COLLATERAL)
 def test_runner_collateral(test_case):
     path_obj = Path(test_case)
@@ -49,6 +48,7 @@ def test_class4_ex2():
     assert "Copy in progress" in std_out
     assert "bytes copied" in std_out
 
+
 def test_class4_ex3():
     base_path = "../class4/exercises/"
     cmd_list = ["python", "exercise3.py"]
@@ -57,7 +57,7 @@ def test_class4_ex3():
     assert std_err == ""
     assert "Target IP" in std_out
     assert "8.8.8.8" in std_out
-    assert std_out.count("!") >= 180 
+    assert std_out.count("!") >= 180
 
 
 def test_class4_ex4():
