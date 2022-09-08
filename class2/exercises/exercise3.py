@@ -1,30 +1,24 @@
 import os
+from datetime import datetime
 from getpass import getpass
-from netmiko import ConnectHandler
+from netmiko import ConnectHandler, ReadTimeout
 
 # Code so automated tests will run properly
 password = os.getenv("NETMIKO_PASSWORD") if os.getenv("NETMIKO_PASSWORD") else getpass()
 
-
-cisco3 = {
-    "device_type": "cisco_xe",
+device = {
     "host": "cisco3.lasthop.io",
     "username": "pyclass",
     "password": password,
-}
-
-cisco4 = {
     "device_type": "cisco_xe",
-    "host": "cisco4.lasthop.io",
-    "username": "pyclass",
-    "password": password,
 }
 
-for device in (cisco3, cisco4):
-    with ConnectHandler(**device) as net_connect:
-        start_prompt = net_connect.find_prompt()
-        net_connect.send_command_timing("disable")
-        end_prompt = net_connect.find_prompt()
-        print(f"\nStarting prompt: {start_prompt}")
-        print(f"\nEnding prompt: {end_prompt}")
-        print()
+try:
+    ssh_conn = ConnectHandler(**device)
+    start = datetime.now()
+    show_tech = ssh_conn.send_command("show tech-support", read_timeout=5)
+except ReadTimeout:
+    end = datetime.now()
+    print("\nProgram failed with ReadTimeout Exception.\n")
+    print(f"Execution time: {end - start}")
+    print("\n")
