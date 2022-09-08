@@ -41,28 +41,6 @@ def test_runner_collateral_exception(test_case):
     assert "raise ReadTimeout" in std_err
 
 
-def test_bonus2_ex1():
-    base_path = "../bonus2/exercises/"
-    cmd_list = ["python", "exercise1.py"]
-    std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
-    assert return_code == 0
-    assert std_err == ""
-    assert "Target IP" in std_out
-    assert "8.8.8.8" in std_out
-    assert std_out.count("!") >= 180
-
-
-def test_bonus2_ex2():
-    base_path = "../bonus2/exercises/"
-    cmd_list = ["python", "exercise2.py"]
-    std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
-    assert return_code == 0
-    assert std_err == ""
-    assert "Target IP" in std_out
-    assert "8.8.8.8" in std_out
-    assert std_out.count("!") >= 180
-
-
 def test_bonus2_ex3():
     base_path = "../bonus2/exercises/"
     cmd_list = ["python", "exercise3.py"]
