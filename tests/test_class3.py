@@ -5,6 +5,7 @@ from utilities import subprocess_runner
 
 
 TEST_COLLATERAL = [
+    "../class3/collateral/show_timing.py",
     "../class3/collateral/show_textfsm.py",
     "../class3/collateral/show_genie.py",
     "../class3/collateral/show_genie_nxos.py",
