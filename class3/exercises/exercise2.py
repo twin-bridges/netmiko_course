@@ -1,28 +1,34 @@
 import os
-from netmiko import ConnectHandler
 from getpass import getpass
+from datetime import datetime
+from netmiko import ConnectHandler
 
 # Code so automated tests will run properly
 password = os.getenv("NETMIKO_PASSWORD") if os.getenv("NETMIKO_PASSWORD") else getpass()
-my_device = {
-    "device_type": "cisco_nxos",
-    "host": "nxos1.lasthop.io",
+
+device = {
+    "host": "cisco3.lasthop.io",
     "username": "pyclass",
     "password": password,
+    "device_type": "cisco_xe",
+    "session_log": "traceroute.out",
 }
 
-with ConnectHandler(**my_device) as net_connect:
-    output = net_connect.send_command("show lldp neighbors detail", use_genie=True)
-    output = output["interfaces"]
-    for intf_name, v in output.items():
-        print()
-        print(f"Local Intf: {intf_name}")
-        print("-" * 12)
-        neighbor_dict = v["port_id"][intf_name]["neighbors"]
-        for neighbor_name, neighbor_data in neighbor_dict.items():
-            remote_port = neighbor_data["port_description"]
-            mgmt_ip = neighbor_data["management_address_v4"]
-            print(f"Neighbor: {neighbor_name}")
-            print(f"  Remote Port: {remote_port}")
-            print(f"  MGMT IP: {mgmt_ip}")
-            print("-" * 12)
+command = "show tech-support"
+ssh_conn = ConnectHandler(**device)
+
+# Gather the entire output
+start_time = datetime.now()
+output = ssh_conn.send_command_timing(
+    command, last_read=10, read_timeout=180, strip_prompt=False
+)
+end_time = datetime.now()
+ssh_conn.disconnect()
+
+print("\n\n")
+print("-" * 80)
+print(output)
+print("-" * 80)
+print("\n\n")
+print(f"Exec time: {end_time - start_time}")
+print("\n\n")
