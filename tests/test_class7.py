@@ -16,6 +16,7 @@ TEST_COLLATERAL = [
     "../class7/collateral/auth_retry.py",
     "../class7/collateral/auth_retry_func.py",
     "../class7/collateral/handle_failures.py",
+    "../class7/collateral/conn_log.py",
 ]
 
 
@@ -69,6 +70,16 @@ def test_class7_ex2():
 def test_class7_ex3():
     base_path = "../class7/exercises/"
     cmd_list = ["python", "exercise3.py"]
+    std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
+    assert return_code == 0
+    assert std_err == ""
+    assert "Successfully connected to device" in std_out
+    assert "nxos2#" in std_out
+
+
+def test_class7_ex4():
+    base_path = "../class7/exercises/"
+    cmd_list = ["python", "exercise4.py"]
     std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
     assert return_code == 0
     assert std_err == ""
