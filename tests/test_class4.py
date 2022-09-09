@@ -6,7 +6,7 @@ from utilities import subprocess_runner
 
 TEST_COLLATERAL = [
     "../class4/collateral/send_command_prompting.py",
-    "../class4/collateral/send_command_timing_prompting.py"
+    "../class4/collateral/send_command_timing_prompting.py",
     "../class4/collateral/send_multiline/mline_pattern.py",
     # "../class4/collateral/send_multiline/file_delete_pattern.py",
     # "../class4/collateral/send_multiline_timing/file_delete_timing.py",
