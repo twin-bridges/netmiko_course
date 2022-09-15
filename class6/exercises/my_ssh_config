@@ -1,8 +1,8 @@
 host jumphost
   IdentitiesOnly yes
   IdentityFile ~/.ssh/my_ssh_key
-  User kbyers
-  HostName pydev1.lasthop.io
+  User student1
+  HostName localhost
 
 host * !jumphost
   User pyclass

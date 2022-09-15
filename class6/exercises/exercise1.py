@@ -6,6 +6,7 @@ base_device = {
     "password": "cisco123",
     "use_keys": True,
     "key_file": "~/.ssh/student_key",
+    "disabled_algorithms": {"pubkeys": ["rsa-sha2-256", "rsa-sha2-512"]},
 }
 
 cisco3 = base_device.copy()

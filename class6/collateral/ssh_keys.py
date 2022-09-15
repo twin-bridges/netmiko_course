@@ -6,6 +6,7 @@ cisco3 = {
     "username": "student1",
     "use_keys": True,
     "key_file": "~/.ssh/student_key",
+    "disabled_algorithms": {"pubkeys": ["rsa-sha2-256", "rsa-sha2-512"]},
 }
 
 with ConnectHandler(**cisco3) as net_connect:
