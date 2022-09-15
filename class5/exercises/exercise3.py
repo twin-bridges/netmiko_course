@@ -1,5 +1,5 @@
 import os
-from netmiko import ConnectHandler, NetmikoTimeoutException
+from netmiko import ConnectHandler, ReadTimeout
 from getpass import getpass
 
 # Code so automated tests will run properly
@@ -28,7 +28,7 @@ with ConnectHandler(**nxos1) as net_connect:
         cmd = "show ip interface brief vrf management | include management"
         output = net_connect.send_command(cmd)
         print(f"\n{output}\n")
-    except NetmikoTimeoutException:
+    except ReadTimeout:
         print("...long command failed with an exception")
 
     # Try again but disable cmd_verify
