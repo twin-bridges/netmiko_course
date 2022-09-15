@@ -59,5 +59,4 @@ def test_class5_ex3():
     assert "Setting the hostname to a very long value" in std_out
     assert "Testing long command that should now fail" in std_out
     assert "long command failed with an exception" in std_out
-    assert std_out.count("show ip interface brief vrf management | include manage") == 2
     assert "Restoring hostname to original value" in std_out
