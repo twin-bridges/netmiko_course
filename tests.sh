@@ -20,7 +20,6 @@ echo "pylama ." \
 && py.test -x -s -v test_class10.py \
 && py.test -x -s -v test_class11.py \
 && py.test -x -s -v test_class12.py \
-&& py.test -x -s -v test_bonus1.py \
 \
 || RETURN_CODE=1
 
