@@ -8,7 +8,7 @@ base_device = {
     "use_keys": True,
     "key_file": "~/.ssh/student_key",
     "allow_agent": True,
-    "disabled_algorithms": {"pubkeys": ["rsa-sha2-256", "rsa-sha2-512"]},
+    "disable_sha2_fix": True,
 }
 
 cisco3 = base_device.copy()
