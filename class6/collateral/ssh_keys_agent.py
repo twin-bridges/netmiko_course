@@ -8,6 +8,7 @@ cisco3 = {
     "use_keys": True,
     "key_file": "~/.ssh/test_rsa_encr",
     "allow_agent": True,
+    "disable_sha2_fix": True,
 }
 
 with ConnectHandler(**cisco3) as net_connect:
