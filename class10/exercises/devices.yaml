@@ -1,8 +1,8 @@
 cisco3:
-  device_type: cisco_ios
+  device_type: cisco_xe
   hostname: cisco3.lasthop.io
 cisco4:
-  device_type: cisco_ios
+  device_type: cisco_xe
   hostname: cisco4.lasthop.io
 nxos1:
   device_type: cisco_nxos

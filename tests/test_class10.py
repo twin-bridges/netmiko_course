@@ -31,7 +31,7 @@ def test_class10_ex1():
     std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
     assert return_code == 0
     assert std_err == ""
-    assert std_out.count("cisco_ios") == 2
+    assert std_out.count("cisco_xe") == 2
     assert std_out.count("cisco_nxos") == 2
     assert std_out.count("juniper_junos") == 2
 
@@ -42,7 +42,7 @@ def test_class10_ex2():
     std_out, std_err, return_code = subprocess_runner(cmd_list, exercise_dir=base_path)
     assert return_code == 0
     assert std_err == ""
-    assert std_out.count("cisco_ios") == 2
+    assert std_out.count("cisco_xe") == 2
     assert std_out.count("cisco_nxos") == 2
     assert std_out.count("juniper_junos") == 2
     assert "Creating devices.yaml file" in std_out
