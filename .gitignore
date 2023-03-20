@@ -132,3 +132,5 @@ dmypy.json
 *.out
 *.log
 output.txt
+
+./class1/collateral/*.out
