@@ -40,3 +40,6 @@ if __name__ == "__main__":
         print(f"{device_name}:\n\n{output}")
         print("-" * 20)
         print()
+
+    # There is an odd concurrent futures exception if you don't cleanup the pool gracefully.
+    del pool

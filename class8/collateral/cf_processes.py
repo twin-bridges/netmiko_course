@@ -65,5 +65,7 @@ if __name__ == "__main__":
         print("-" * 20)
         print()
 
+    # There is an odd concurrent futures exception if you don't cleanup the pool gracefully.
+    del pool
     end_time = datetime.now()
     print(end_time - start_time)
