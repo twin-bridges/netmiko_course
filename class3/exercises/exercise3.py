@@ -26,5 +26,5 @@ with ConnectHandler(**arista1) as net_connect:
         if vlan_dict["vlan_id"] == "7":
             print()
             print(f"VLAN ID: {vlan_dict['vlan_id']}")
-            print(f"VLAN name: {vlan_dict['name']}")
+            print(f"VLAN name: {vlan_dict['vlan_name']}")
             print()
